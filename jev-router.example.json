@@ -1,0 +1,32 @@
+{
+  "main": "auto",
+  "tasks": "auto",
+  "candidates": [
+    {
+      "model": "anthropic/claude-haiku-4-5",
+      "tier": "quick"
+    },
+    {
+      "model": "anthropic/claude-sonnet-5",
+      "tier": "balanced"
+    },
+    {
+      "model": "anthropic/claude-opus-4-5",
+      "tier": "strong",
+      "thinking": "high"
+    },
+    {
+      "model": "zai/glm-5",
+      "tier": "balanced"
+    },
+    {
+      "model": "openai-codex/gpt-6-astra",
+      "tier": "strong"
+    }
+  ],
+  "taskAgents": {
+    "quick": "sonic",
+    "balanced": "task",
+    "strong": "task"
+  }
+}
