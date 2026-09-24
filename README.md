@@ -48,7 +48,17 @@ See `jev-router.example.json`.
 }
 ```
 
-Other keys: `timeoutMs`, `quotaTimeoutMs`, `quotaMaxAgeMs`,
+`candidates` is optional. When it is absent or empty, the router derives
+candidates from the models this OMP install is logged in to (`ctx.models.list()`,
+the same set `--model` offers). Derivation bands each model by output price
+(<= $2/M = quick, <= $15/M = balanced, above = strong), requires reasoning
+support above `quick`, drops dated snapshot ids and `:batch` routes, then keeps
+the most expensive model per provider per tier, at most `cataloguePerTier`
+(default 3) providers per tier. Price is a rough capability proxy, so name
+`candidates` yourself when you care which models run. `/jev` reports which
+source is in use.
+
+Other keys: `cataloguePerTier`, `timeoutMs`, `quotaTimeoutMs`, `quotaMaxAgeMs`,
 `confidenceThreshold`, `maxPromptChars`, `contextReserveTokens`.
 
 The Jev API key is read from macOS Keychain (`omp-jev-router` / `dan`) or
@@ -72,7 +82,7 @@ silently.
 ## Install
 
 ```
-omp -e /Users/dan/code/omp-jev-router/src/index.ts
+omp -e ~/code/omp-jev-router/src/index.ts
 ```
 
 or add the directory to `extensions` in OMP settings.

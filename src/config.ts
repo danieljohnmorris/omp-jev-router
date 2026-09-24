@@ -6,13 +6,14 @@ import type { RouterConfig, RoutingMode, Tier } from "./types";
 export const CONFIG_PATH = join(homedir(), ".omp", "jev-router.json");
 
 /**
- * Defaults route nothing until the user names candidates: an empty candidate
- * list yields "no eligible model", which leaves the session model untouched.
+ * Routing is off until the user turns it on. With no explicit `candidates`,
+ * the router derives them from the models this install is authenticated for.
  */
 export const DEFAULT_CONFIG: RouterConfig = {
 	main: "off",
 	tasks: "off",
 	candidates: [],
+	cataloguePerTier: 3,
 	taskAgents: {},
 	timeoutMs: 4_000,
 	quotaTimeoutMs: 4_000,
@@ -70,6 +71,7 @@ export function parseConfig(raw: unknown): RouterConfig {
 		main: mode(raw.main, DEFAULT_CONFIG.main),
 		tasks: mode(raw.tasks, DEFAULT_CONFIG.tasks),
 		candidates: candidates(raw.candidates),
+		cataloguePerTier: positive(raw.cataloguePerTier, DEFAULT_CONFIG.cataloguePerTier),
 		taskAgents: taskAgents(raw.taskAgents),
 		timeoutMs: positive(raw.timeoutMs, DEFAULT_CONFIG.timeoutMs),
 		quotaTimeoutMs: positive(raw.quotaTimeoutMs, DEFAULT_CONFIG.quotaTimeoutMs),

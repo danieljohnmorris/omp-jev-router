@@ -3,13 +3,23 @@ import type { Model, UsageReport } from "@oh-my-pi/pi-ai";
 export type Tier = "quick" | "balanced" | "strong";
 export type RoutingMode = "auto" | "off";
 
+/** A model the router may select, and the tier it satisfies. */
+export interface CandidateSpec {
+	/** `provider/id` or a role alias. */
+	model: string;
+	tier: Tier;
+	thinking?: string;
+}
+
 export interface RouterConfig {
 	/** Routing for this session's own model. */
 	main: RoutingMode;
 	/** Routing for subagents spawned through the `task` tool. */
 	tasks: RoutingMode;
-	/** Model specs (`provider/id` or role alias) with the tier they satisfy. */
-	candidates: Array<{ model: string; tier: Tier; thinking?: string }>;
+	/** Explicit candidates. Empty means derive them from the authenticated catalogue. */
+	candidates: CandidateSpec[];
+	/** Models kept per tier when candidates are derived from the catalogue. */
+	cataloguePerTier: number;
 	/** Tier → agent name used when `tasks` routing is on and the caller left the agent unset. */
 	taskAgents: Partial<Record<Tier, string>>;
 	timeoutMs: number;

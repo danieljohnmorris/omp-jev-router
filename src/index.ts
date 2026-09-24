@@ -1,9 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { catalogueCandidates } from "./catalogue";
 import { loadConfig } from "./config";
 import { loadApiKey } from "./credentials";
 import { getQuotaSnapshot, type QuotaHost, quotaForModel } from "./quota";
 import { chooseCandidate, classify } from "./router";
-import type { Candidate, RouterConfig, RoutingMode, Tier, Triage } from "./types";
+import type { Candidate, CandidateSpec, RouterConfig, RoutingMode, Tier, Triage } from "./types";
 
 const THINKING_LEVELS: Record<string, true> = { off: true, minimal: true, low: true, medium: true, high: true, xhigh: true, max: true };
 
@@ -16,16 +17,25 @@ interface RouterState {
 	lastTasks?: string;
 }
 
+/** Configured candidates win; otherwise derive them from the authenticated catalogue. */
+function specsFor(state: RouterState, ctx: ExtensionContext): CandidateSpec[] {
+	if (state.config.candidates.length > 0) return state.config.candidates;
+	return catalogueCandidates(ctx.models.list(), state.config.cataloguePerTier);
+}
+
 /**
  * Candidates the session can actually use right now: authenticated, quota-checked,
  * and large enough to hold the live context plus the configured output reserve.
+ *
+ * With no configured candidates the specs are derived from the models this
+ * install is logged in to, so routing works before the user writes any config.
  */
 async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promise<Candidate[]> {
 	const snapshot = await getQuotaSnapshot(ctx as unknown as QuotaHost, state.config);
 	const used = ctx.getContextUsage()?.tokens ?? 0;
 	const needed = used + state.config.contextReserveTokens;
 	const out: Candidate[] = [];
-	for (const entry of state.config.candidates) {
+	for (const entry of specsFor(state, ctx)) {
 		const model = ctx.models.resolve(entry.model);
 		if (!model) continue;
 		if (typeof model.contextWindow === "number" && model.contextWindow < needed) continue;
@@ -98,14 +108,16 @@ async function routeTasks(state: RouterState, ctx: ExtensionContext, input: Reco
 	return { ...input, tasks: routed };
 }
 
-function summary(state: RouterState): string {
+function summary(state: RouterState, ctx: ExtensionContext): string {
+	const specs = specsFor(state, ctx);
+	const source = state.config.candidates.length > 0 ? "config" : "catalogue";
 	const tiers: Tier[] = ["quick", "balanced", "strong"];
-	const byTier = tiers.map((tier) => `${tier}=${state.config.candidates.filter((c) => c.tier === tier).length}`).join(" ");
+	const byTier = tiers.map((tier) => `${tier}=${specs.filter((c) => c.tier === tier).length}`).join(" ");
 	return [
 		`main: ${state.main}`,
 		`tasks: ${state.tasks}`,
 		`credential: ${state.apiKey ? "loaded" : "missing"}`,
-		`candidates: ${byTier}`,
+		`candidates (${source}): ${byTier}`,
 		`last main: ${state.lastMain ?? "none"}`,
 		`last tasks: ${state.lastTasks ?? "none"}`,
 	].join("\n");
@@ -141,7 +153,7 @@ export default function activate(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const [target, value] = args.trim().split(/\s+/);
 			if (!target) {
-				ctx.ui.notify(summary(state));
+				ctx.ui.notify(summary(state, ctx));
 				return;
 			}
 			if (target === "reload") {
@@ -149,7 +161,7 @@ export default function activate(pi: ExtensionAPI): void {
 				state.apiKey = loadApiKey();
 				state.main = state.config.main;
 				state.tasks = state.config.tasks;
-				ctx.ui.notify(`Reloaded.\n${summary(state)}`);
+				ctx.ui.notify(`Reloaded.\n${summary(state, ctx)}`);
 				return;
 			}
 			if ((target !== "main" && target !== "tasks") || (value !== "auto" && value !== "off")) {
@@ -158,7 +170,7 @@ export default function activate(pi: ExtensionAPI): void {
 			}
 			state[target] = value;
 			ctx.ui.setStatus("jev-router", `jev: main ${state.main}, tasks ${state.tasks}`);
-			ctx.ui.notify(summary(state));
+			ctx.ui.notify(summary(state, ctx));
 		},
 	});
 }
