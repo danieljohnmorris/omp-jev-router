@@ -16,7 +16,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
 	cataloguePerTier: 3,
 	taskAgents: {},
 	timeoutMs: 4_000,
-	quotaTimeoutMs: 4_000,
+	quotaTimeoutMs: 8_000,
 	quotaMaxAgeMs: 10 * 60_000,
 	confidenceThreshold: 0.6,
 	maxPromptChars: 4_000,
