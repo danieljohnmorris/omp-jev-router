@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { catalogueCandidates } from "./catalogue";
-import { loadConfig } from "./config";
+import { loadConfig, saveModes } from "./config";
 import { loadApiKey } from "./credentials";
 import { getQuotaSnapshot, type QuotaHost, quotaForModel } from "./quota";
 import { chooseCandidate, classify } from "./router";
@@ -149,7 +149,11 @@ export default function activate(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("jev", {
-		description: "Jev router: status, or `main auto|off`, `tasks auto|off`, `reload`",
+		description: "Jev router: `on`, `off`, `main auto|off`, `tasks auto|off`, `reload`, or no argument for status",
+		getArgumentCompletions: (prefix) =>
+			["on", "off", "main auto", "main off", "tasks auto", "tasks off", "reload"]
+				.filter((option) => option.startsWith(prefix))
+				.map((option) => ({ value: option, label: option })),
 		handler: async (args, ctx) => {
 			const [target, value] = args.trim().split(/\s+/);
 			if (!target) {
@@ -164,11 +168,17 @@ export default function activate(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Reloaded.\n${summary(state, ctx)}`);
 				return;
 			}
-			if ((target !== "main" && target !== "tasks") || (value !== "auto" && value !== "off")) {
-				ctx.ui.notify("Usage: /jev [main|tasks auto|off] [reload]", "warning");
+			if (target === "on" || target === "off") {
+				state.main = target === "on" ? "auto" : "off";
+				state.tasks = state.main;
+			} else if ((target === "main" || target === "tasks") && (value === "auto" || value === "off")) {
+				state[target] = value;
+			} else {
+				ctx.ui.notify("Usage: /jev [on|off] [main|tasks auto|off] [reload]", "warning");
 				return;
 			}
-			state[target] = value;
+			// Persist, so a toggle survives a restart rather than reverting to the file.
+			saveModes(state.main, state.tasks);
 			ctx.ui.setStatus("jev-router", `jev: main ${state.main}, tasks ${state.tasks}`);
 			ctx.ui.notify(summary(state, ctx));
 		},

@@ -35,9 +35,11 @@ export function tierFor(price: number): Tier {
  *
  * Only chat models that accept text are eligible; `balanced` and `strong` also
  * require reasoning support, because those tiers exist to buy deliberation.
- * Each tier keeps its most expensive models first (price is the capability
- * proxy inside a band) and at most one model per provider, so a tier spans
- * providers and stays useful when one of them runs out of quota. `perTier`
+ * Within a tier the widest context window wins, with price as the tiebreak:
+ * a provider's current flagship carries a larger window than the retired
+ * generation it replaced, and a retired id may no longer be served even though
+ * the catalogue still lists it. At most one model per provider per tier, so a
+ * tier spans providers and stays useful when one runs out of quota; `perTier`
  * bounds the quota probe on installs with hundreds of models.
  */
 export function catalogueCandidates(models: Model[], perTier = 3): CandidateSpec[] {
@@ -54,7 +56,7 @@ export function catalogueCandidates(models: Model[], perTier = 3): CandidateSpec
 	}
 	const out: CandidateSpec[] = [];
 	for (const tier of ["quick", "balanced", "strong"] as const) {
-		const ranked = byTier[tier].sort((a, b) => b.price - a.price || (b.model.contextWindow ?? 0) - (a.model.contextWindow ?? 0));
+		const ranked = byTier[tier].sort((a, b) => (b.model.contextWindow ?? 0) - (a.model.contextWindow ?? 0) || b.price - a.price);
 		const seen = new Set<string>();
 		for (const entry of ranked) {
 			if (seen.size >= perTier) break;

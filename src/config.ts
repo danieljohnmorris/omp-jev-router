@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { RouterConfig, RoutingMode, Tier } from "./types";
 
 export const CONFIG_PATH = join(homedir(), ".omp", "jev-router.json");
@@ -92,4 +92,20 @@ export function loadConfig(path = CONFIG_PATH): RouterConfig {
 	} catch {
 		return { ...DEFAULT_CONFIG };
 	}
+}
+
+/**
+ * Persist the two switches so a toggle survives a restart. Every other key in
+ * the file is preserved, including ones this version does not know about.
+ */
+export function saveModes(main: RoutingMode, tasks: RoutingMode, path = CONFIG_PATH): void {
+	let raw: Record<string, unknown> = {};
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		if (record(parsed)) raw = parsed;
+	} catch {
+		// No readable file: write one holding just the switches.
+	}
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify({ ...raw, main, tasks }, null, "\t")}\n`);
 }

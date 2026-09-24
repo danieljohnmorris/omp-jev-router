@@ -27,7 +27,18 @@ describe("tierFor", () => {
 });
 
 describe("catalogueCandidates", () => {
-	test("keeps one model per provider per tier, most expensive first", () => {
+	test("prefers the wider context window over a pricier retired generation", () => {
+		const specs = catalogueCandidates(
+			[
+				model("anthropic", "retired-opus", 75, { contextWindow: 200_000 }),
+				model("anthropic", "current-opus", 60, { contextWindow: 1_000_000 }),
+			],
+			3,
+		);
+		expect(specs).toEqual([{ model: "anthropic/current-opus", tier: "strong" }]);
+	});
+
+	test("keeps one model per provider per tier", () => {
 		const specs = catalogueCandidates(
 			[
 				model("anthropic", "cheap-opus", 60),
