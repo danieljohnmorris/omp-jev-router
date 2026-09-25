@@ -18,22 +18,27 @@ last main: jev · quick via jev (0.99) · anthropic/claude-haiku-4-5 · 100% lef
 last tasks: jev: strong -> task
 ```
 
-## What it is not
+## Where it sits
 
-- Not a proxy. No extra process, no request forwarding, no endpoint to run.
-  Routing happens inside OMP, before a provider call is made.
-- Not a replacement for model roles. A `candidates` entry may name a role alias
-  (`@slow`), and the role stays the authority on what that means. Roles answer
-  "which model is `slow`"; this answers "which candidate for this turn".
-- Not a replacement for `retry.fallbackChains` or an agent's `model:` chain.
-  Those react to a failed call. This acts before the call.
+Routing happens inside OMP, before a provider call is made. There is no proxy
+process and no endpoint to run.
+
+Model roles keep deciding what a role means. A `candidates` entry may name a
+role alias such as `@slow`; the role resolves which model that is, and the
+router picks which candidate serves this turn.
+
+`retry.fallbackChains` and an agent's `model:` chain react to a call that has
+already failed. This runs before the call, so the two compose: the router skips
+a provider it knows is out of quota, and the chain still catches a failure it
+could not predict.
 
 ## How a turn is routed
 
 1. The prompt, truncated to `maxPromptChars`, goes to TypeSafe's System One
    endpoint as one `choice` question over `quick`, `balanced`, `strong`. The
-   answer is a capability **floor**, not an exact tier. Prompts carrying images
-   skip the call and take `strong`.
+   answer is a capability **floor**: the router may pick a higher tier when
+   quota says so, never a lower one. Prompts carrying images skip the call and
+   take `strong`.
 2. Usage reports come from OMP's own `AuthStorage.fetchUsageReports`, cached for
    `quotaMaxAgeMs`. Every window of every account of the candidate's provider is
    evaluated:
@@ -43,7 +48,7 @@ last tasks: jev: strong -> task
      because OMP's own credential selection decides which account serves the
      request.
    - A window whose reset time has passed is treated as reset. A report older
-     than `quotaMaxAgeMs` is reported as stale, not as capacity.
+     than `quotaMaxAgeMs` counts as stale, and stale never counts as headroom.
 3. Candidates below the floor, out of quota, or with a context window too small
    for the live context plus `contextReserveTokens` are dropped. Among the rest
    the lowest quota **pressure** wins. Ties prefer the cheaper tier, and the
@@ -89,7 +94,8 @@ The key is never written to the repo or to the config file.
 
 ## Configuration
 
-`~/.omp/jev-router.json`. With no file, routing is off and nothing happens.
+`~/.omp/jev-router.json`. With no file, both switches are off and the extension
+makes no calls.
 
 ```json
 {
@@ -127,7 +133,7 @@ session's thinking level alone.
 ### Deriving candidates
 
 With no `candidates`, the router uses the models this install is logged in to,
-via `ctx.models.list()`, the same set `--model` offers. Derivation:
+via `ctx.models.list()`, the same set `--model` offers. From that list it:
 
 - bands by output price: at or below $2/M is `quick`, at or below $15/M is
   `balanced`, above is `strong`
@@ -147,10 +153,10 @@ A `task` item that already names an agent is left alone, so nategpt workers,
 reviewers and scouts stay pinned. An item with no agent, or the default `task`,
 is classified and gets the agent mapped to its tier.
 
-Task routing selects an **agent**, not a model, because the `task` tool's item
-schema has no per-item model field. The agent's own `model:` frontmatter then
-applies, and quota filtering does not reach it. Give a tier an agent whose model
-chain you trust.
+Task routing selects an **agent**. The `task` tool's item schema has no
+per-item model field, so the agent's own `model:` frontmatter decides the model
+and quota filtering does not reach it. Give a tier an agent whose model chain
+you trust.
 
 ## Commands
 
