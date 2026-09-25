@@ -53,6 +53,19 @@ function describe(triage: Triage, detail: string): string {
 	return `jev · ${triage.tier} via ${triage.source} (${triage.confidence.toFixed(2)}) · ${detail}`;
 }
 
+/**
+ * On the available path the reason string is constant boilerplate, so show the
+ * two numbers that actually decided the pick instead: the tightest applicable
+ * window's headroom, and pressure (headroom measured against time to reset).
+ * Every other state keeps its explicit reason, which is the informative case.
+ */
+function quotaDetail(quota: Candidate["quota"]): string {
+	if (quota.status !== "available") return quota.reason;
+	const headroom = quota.remainingFraction === undefined ? "?" : `${Math.round(quota.remainingFraction * 100)}%`;
+	const load = quota.pressure === undefined ? "?" : quota.pressure.toFixed(2);
+	return `${headroom} left · pressure ${load}`;
+}
+
 async function routeMain(state: RouterState, pi: ExtensionAPI, ctx: ExtensionContext, prompt: string, hasImages: boolean): Promise<void> {
 	const triage = await classify(prompt, hasImages, state.config, state.apiKey);
 	const candidates = await buildCandidates(state, ctx);
@@ -74,7 +87,7 @@ async function routeMain(state: RouterState, pi: ExtensionAPI, ctx: ExtensionCon
 		}
 	}
 	if (chosen.thinking) pi.setThinkingLevel(chosen.thinking as Parameters<ExtensionAPI["setThinkingLevel"]>[0]);
-	state.lastMain = describe(triage, `${key} · ${chosen.quota.reason}`);
+	state.lastMain = describe(triage, `${key} · ${quotaDetail(chosen.quota)}`);
 	ctx.ui.setStatus("jev-router", state.lastMain);
 }
 
