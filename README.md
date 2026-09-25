@@ -91,9 +91,11 @@ thing keeping them routable — and it routes to them blind.
   then retried once — a top-up you never told the router about heals itself.
   Ordinary rate limits and transport errors are not credit failures and are
   ignored.
-- `"off"`: only measured plan headroom counts. With nothing measurable the
-  router stands down and leaves the session model alone, rather than spending a
-  balance it cannot see.
+- `"off"`: only measured plan headroom counts, plus unmeasured **plan
+  subscriptions** (OAuth credentials) — the plan caps spend upstream, so routing
+  to them blind cannot overspend. With nothing measurable and only credit-billed
+  (API-key) candidates left, the router stands down and leaves the session model
+  alone, rather than spending a balance it cannot see.
 
 `/jev credits <provider> dry` marks one by hand; `/jev credits <provider> topped`
 clears it immediately after you refill. `/jev` lists the currently dry providers.
@@ -152,7 +154,7 @@ makes no calls.
 | `timeoutMs` | `4000` | Jev classification deadline, capped at 10s. |
 | `quotaTimeoutMs` | `8000` | Usage-report fetch deadline. A cold probe spans every account of every provider. |
 | `quotaMaxAgeMs` | `600000` | Age past which a cached report counts as stale. |
-| `credits` | `"on"` | `"on"` keeps unmeasurable credit-billed providers routable and learns from 402s; `"off"` uses only measured plan headroom. |
+| `credits` | `"on"` | `"on"` keeps unmeasurable credit-billed providers routable and learns from 402s; `"off"` uses measured plan headroom and unmeasured OAuth plan subscriptions only. |
 | `creditRecheckMs` | `21600000` | How long a provider stays marked out of credits before being retried. |
 | `confidenceThreshold` | `0.6` | Below this, the tier still applies but is marked low-confidence. |
 | `maxPromptChars` | `4000` | Prompt truncation before classification. |

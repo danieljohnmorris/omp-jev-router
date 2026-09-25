@@ -1,7 +1,7 @@
 import type { Model, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import { beforeEach, describe, expect, it } from "bun:test";
 import { DEFAULT_CONFIG } from "../src/config";
-import { getQuotaSnapshot, type QuotaHost, quotaForModel, resetQuotaCache } from "../src/quota";
+import { billingForProvider, getQuotaSnapshot, type QuotaHost, quotaForModel, resetQuotaCache } from "../src/quota";
 import type { QuotaSnapshot } from "../src/types";
 
 const NOW = 1_800_000_000_000;
@@ -110,5 +110,50 @@ describe("getQuotaSnapshot", () => {
 		await getQuotaSnapshot(probe.host, DEFAULT_CONFIG);
 		await getQuotaSnapshot(probe.host, DEFAULT_CONFIG);
 		expect(probe.calls()).toBe(1);
+	});
+
+	it("returns a graceful error when fetchUsageReports is missing", async () => {
+		// omp 18.3.1 bug: authStorage exists but fetchUsageReports is undefined
+	const hostMissing: QuotaHost = {
+		modelRegistry: {
+			getProviderBaseUrl: () => undefined,
+			authStorage: {},
+		},
+	};
+		const snapshot = await getQuotaSnapshot(hostMissing, DEFAULT_CONFIG);
+		expect(snapshot.error).toContain("usage reports unavailable");
+		expect(snapshot.reports).toEqual([]);
+	});
+});
+
+describe("billingForProvider", () => {
+	function hostWithOrigin(kind?: string): QuotaHost {
+		return {
+			modelRegistry: {
+				getProviderBaseUrl: () => undefined,
+				authStorage: {
+					getCredentialOrigin: () => (kind === undefined ? undefined : { kind }),
+				},
+			},
+		};
+	}
+
+	it("classifies an OAuth credential as a plan subscription", () => {
+		expect(billingForProvider(hostWithOrigin("oauth"), "anthropic")).toBe("plan");
+	});
+
+	it("treats every non-oauth origin as credit-billed", () => {
+		for (const kind of ["api_key", "env", "config", "runtime", "fallback"]) {
+			expect(billingForProvider(hostWithOrigin(kind), "anthropic")).toBe("credit");
+		}
+	});
+
+	it("reports unknown when no origin resolves", () => {
+		expect(billingForProvider(hostWithOrigin(), "anthropic")).toBe("unknown");
+	});
+
+	it("reports unknown when the host lacks getCredentialOrigin entirely", () => {
+		const bare: QuotaHost = { modelRegistry: { getProviderBaseUrl: () => undefined, authStorage: {} } };
+		expect(billingForProvider(bare, "anthropic")).toBe("unknown");
 	});
 });

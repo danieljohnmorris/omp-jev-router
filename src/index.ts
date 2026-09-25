@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { catalogueCandidates } from "./catalogue";
 import { loadConfig, saveModes } from "./config";
 import { loadApiKey } from "./credentials";
-import { getQuotaSnapshot, type QuotaHost, quotaForModel } from "./quota";
+import { billingForProvider, getQuotaSnapshot, type QuotaHost, quotaForModel } from "./quota";
 import { type CreditMarks, dryProviders, isDry, isOutOfCredit, loadCredits, markDry, markTopped } from "./credits";
 import { applyFloorHysteresis, updateFloorHysteresis, type FloorHysteresis } from "./hysteresis";
 import { chooseCandidate, classify } from "./router";
@@ -37,7 +37,8 @@ function specsFor(state: RouterState, ctx: ExtensionContext): CandidateSpec[] {
  * install is logged in to, so routing works before the user writes any config.
  */
 async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promise<{ candidates: Candidate[]; note?: string }> {
-	const snapshot = await getQuotaSnapshot(ctx as unknown as QuotaHost, state.config);
+	const host = ctx as unknown as QuotaHost;
+	const snapshot = await getQuotaSnapshot(host, state.config);
 	const used = ctx.getContextUsage()?.tokens ?? 0;
 	const needed = used + state.config.contextReserveTokens;
 	const out: Candidate[] = [];
@@ -63,6 +64,7 @@ async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promi
 			tier: entry.tier,
 			thinking: entry.thinking && THINKING_LEVELS[entry.thinking] ? entry.thinking : undefined,
 			quota: quotaForModel(snapshot, model, state.config),
+			billing: billingForProvider(host, model.provider),
 		});
 	}
 	const notes: string[] = [];

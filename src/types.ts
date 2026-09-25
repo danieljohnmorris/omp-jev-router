@@ -29,8 +29,10 @@ export interface RouterConfig {
 	/**
 	 * `on`: providers with no readable quota (credit-billed ones, or any provider
 	 * on a build with no usage API) stay selectable, ranked below measured ones.
-	 * `off`: only measured plan headroom counts, and the router stands down when
-	 * nothing is measurable rather than spending a balance it cannot see.
+	 * `off`: only measured plan headroom and unmeasured plan-subscription (OAuth)
+	 * candidates count; the router stands down rather than spend a credit-billed
+	 * balance it cannot see. Plan subscriptions are capped upstream, so routing
+	 * to them blind cannot overspend.
 	 */
 	credits: CreditsMode;
 	/** How long a "no credits left" mark holds before the provider is retried. */
@@ -62,11 +64,19 @@ export interface QuotaState {
 	windows: QuotaWindow[];
 }
 
+/**
+ * How a candidate's provider bills this session's credential. `plan` (OAuth
+ * subscription) is capped upstream and safe to route blind; `credit` (API key)
+ * can overspend; `unknown` is treated as `credit` under `credits: "off"`.
+ */
+export type Billing = "plan" | "credit" | "unknown";
+
 export interface Candidate {
 	model: Model;
 	tier: Tier;
 	thinking?: string;
 	quota: QuotaState;
+	billing: Billing;
 }
 
 export interface Triage {

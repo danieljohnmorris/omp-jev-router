@@ -3,11 +3,12 @@ import { describe, expect, it } from "bun:test";
 import { chooseCandidate } from "../src/router";
 import type { Candidate, Tier, Triage } from "../src/types";
 
-function candidate(id: string, tier: Tier, remaining: number | undefined, status: Candidate["quota"]["status"] = "available", input: string[] = ["text"]): Candidate {
+function candidate(id: string, tier: Tier, remaining: number | undefined, status: Candidate["quota"]["status"] = "available", input: string[] = ["text"], billing: Candidate["billing"] = "credit"): Candidate {
 	return {
 		model: { provider: "p", id, contextWindow: 200_000, input } as unknown as Model,
 		tier,
 		quota: { status, reason: "test", remainingFraction: remaining, pressure: remaining === undefined ? undefined : 1 / remaining, windows: [] },
+		billing,
 	};
 }
 
@@ -56,6 +57,16 @@ describe("chooseCandidate", () => {
 		const blind = [candidate("strongish", "strong", undefined, "unknown"), candidate("cheap", "quick", undefined, "unknown")];
 		expect(chooseCandidate(triage("quick"), blind, undefined, "off").candidate).toBeUndefined();
 		expect(chooseCandidate(triage("quick"), blind, undefined, "on").candidate?.model.id).toBe("cheap");
+	});
+
+	it("routes an unmeasured plan subscription under credits:off, since the plan caps spend upstream", () => {
+		const decision = chooseCandidate(
+			triage("quick"),
+			[candidate("api-key", "quick", undefined, "unknown"), candidate("plan", "quick", undefined, "unknown", ["text"], "plan")],
+			undefined,
+			"off",
+		);
+		expect(decision.candidate?.model.id).toBe("plan");
 	});
 
 	it("still uses measured plan headroom when credits routing is off", () => {

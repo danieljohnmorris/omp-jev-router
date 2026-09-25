@@ -189,18 +189,22 @@ export function chooseCandidate(triage: Triage, candidates: Candidate[], current
 				: [...rejected].map(([why, count]) => `${count} ${why}`).join(", ");
 			return { reason: `No selection at the ${TIERS[floor]} floor: ${detail}` };
 		}
-		if (credits === "off") {
+		// Under credits:off an unmeasured plan subscription (OAuth) is still safe —
+		// the plan caps spend upstream — but a credit-billed key is not, and
+		// `unknown` billing is treated as credit-billed.
+		const blindPool = credits === "off" ? usable.filter((candidate) => candidate.billing === "plan") : usable;
+		if (blindPool.length === 0) {
 			return {
-				reason: `No selection at the ${TIERS[floor]} floor: credits routing is off and no candidate has measured plan headroom (${usable.length} unmeasured)`,
+				reason: `No selection at the ${TIERS[floor]} floor: credits routing is off and every unmeasured candidate bills a credit balance the router cannot see (${usable.length} unmeasured)`,
 			};
 		}
 		// No measurable headroom anywhere. Prefer the cheapest tier that still clears the floor,
 		// so an unmeasurable provider cannot silently promote every turn to the strongest model.
-		let cheapest = usable[0]!;
-		for (const candidate of usable) {
+		let cheapest = blindPool[0]!;
+		for (const candidate of blindPool) {
 			if (TIERS.indexOf(candidate.tier) < TIERS.indexOf(cheapest.tier)) cheapest = candidate;
 		}
-		const current = usable.find((candidate) => `${candidate.model.provider}/${candidate.model.id}` === currentKey);
+		const current = blindPool.find((candidate) => `${candidate.model.provider}/${candidate.model.id}` === currentKey);
 		const pick = current && TIERS.indexOf(current.tier) === TIERS.indexOf(cheapest.tier) ? current : cheapest;
 		return { candidate: pick, reason: `Selected without quota evidence (${pick.quota.reason}): no candidate had readable headroom` };
 	}

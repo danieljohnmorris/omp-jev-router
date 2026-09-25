@@ -1,6 +1,6 @@
 import type { Model, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import { resolveUsedFraction } from "@oh-my-pi/pi-ai";
-import type { QuotaSnapshot, QuotaState, QuotaWindow, RouterConfig } from "./types";
+import type { Billing, QuotaSnapshot, QuotaState, QuotaWindow, RouterConfig } from "./types";
 
 /**
  * Minimal view of the OMP surfaces this module needs. Keeping it structural lets
@@ -20,8 +20,25 @@ export interface QuotaHost {
 				baseUrlResolver?: (provider: string) => string | undefined;
 				signal?: AbortSignal;
 			}): Promise<UsageReport[] | null | undefined>;
+			/**
+			 * Machine-readable auth provenance; `kind: "oauth"` marks a plan
+			 * subscription. Optional for the same reason as `fetchUsageReports`.
+			 */
+			getCredentialOrigin?(provider: string): { kind: string } | undefined;
 		};
 	};
+}
+
+/**
+ * Classify how a provider bills this session: an OAuth credential is a plan
+ * subscription (capped upstream), any other resolvable auth is a key that
+ * draws down a credit balance. No origin at all is `unknown`, which the
+ * router treats like `credit` under `credits: "off"`.
+ */
+export function billingForProvider(host: QuotaHost, provider: string): Billing {
+	const origin = host.modelRegistry.authStorage.getCredentialOrigin?.(provider);
+	if (!origin) return "unknown";
+	return origin.kind === "oauth" ? "plan" : "credit";
 }
 
 let cached: QuotaSnapshot | undefined;
@@ -51,7 +68,7 @@ export async function getQuotaSnapshot(host: QuotaHost, config: RouterConfig, no
 				// Observed on omp 18.3.1: `ctx.modelRegistry.authStorage` reaches the
 				// extension without this method, so calling it throws a TypeError that
 				// would otherwise be reported as a network failure.
-				return { reports: cached?.reports ?? [], checkedAt: now, error: "This session's auth storage exposes no usage reporting" };
+				return { reports: cached?.reports ?? [], checkedAt: now, error: "usage reports unavailable" };
 			}
 			const reports = await fetchReports.call(host.modelRegistry.authStorage, {
 				baseUrlResolver: (provider: string) => host.modelRegistry.getProviderBaseUrl(provider),
