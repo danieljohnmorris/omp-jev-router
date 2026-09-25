@@ -1,4 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { catalogueCandidates } from "./catalogue";
 import { loadConfig, saveModes } from "./config";
 import { loadApiKey } from "./credentials";
@@ -72,13 +75,36 @@ async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promi
 	if (unresolved > 0) notes.push(`${unresolved} configured model(s) not resolvable`);
 	if (tooSmall > 0) notes.push(`${tooSmall} dropped: context window < ${needed} tokens`);
 	if (dry > 0) notes.push(`${dry} dropped: provider marked out of credits`);
-	if (out.length > 0 && out.every((candidate) => candidate.billing === "unknown")) {
-		// Every provider unclassifiable means the authStorage proxy is stripping the
-		// lookup methods; name what it actually exposes so the gap is diagnosable
-		// from the status line instead of guessed at.
+	if (out.length > 0 && out.every((candidate) => candidate.billing !== "plan")) {
+		// No provider classified as a plan subscription means either every login
+		// really is an API key, or the authStorage proxy is stripping the lookup
+		// methods. The status line truncates, so dump the evidence to a file.
 		const auth: object = host.modelRegistry.authStorage ?? {};
-		const keys = [...Object.keys(auth), ...Object.getOwnPropertyNames(Object.getPrototypeOf(auth) ?? {})].filter((key) => key !== "constructor");
-		notes.push(`billing unreadable; authStorage exposes: ${keys.length > 0 ? [...new Set(keys)].sort().join(", ") : "nothing"}`);
+		const keys = [...new Set([...Object.keys(auth), ...Object.getOwnPropertyNames(Object.getPrototypeOf(auth) ?? {})])].filter((key) => key !== "constructor").sort();
+		notes.push("billing diagnostic written to ~/.omp/jev-router-debug.json");
+		try {
+			writeFileSync(
+				join(homedir(), ".omp", "jev-router-debug.json"),
+				JSON.stringify(
+					{
+						at: new Date().toISOString(),
+						authStorageKeys: keys,
+						candidates: out.map((candidate) => ({
+							model: `${candidate.model.provider}/${candidate.model.id}`,
+							billing: candidate.billing,
+							quotaStatus: candidate.quota.status,
+							origin: host.modelRegistry.authStorage.getCredentialOrigin?.(candidate.model.provider) ?? null,
+							storedType: host.modelRegistry.authStorage.get?.(candidate.model.provider)?.type ?? null,
+						})),
+						snapshotError: snapshot.error ?? null,
+					},
+					null,
+					"\t",
+				),
+			);
+		} catch {
+			// Diagnostics must never break routing.
+		}
 	}
 	return { candidates: out, note: notes.length > 0 ? notes.join("; ") : undefined };
 }
