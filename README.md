@@ -14,7 +14,7 @@ main: auto
 tasks: auto
 credential: loaded
 candidates (catalogue): quick=3 balanced=3 strong=3
-last main: jev: quick (jev, 0.94) · anthropic/claude-haiku-4-5
+last main: jev · quick via jev (0.99) · anthropic/claude-haiku-4-5 · 100% left · pressure 0.99
 last tasks: jev: strong -> task
 ```
 
@@ -46,22 +46,37 @@ last tasks: jev: strong -> task
      than `quotaMaxAgeMs` is reported as stale, not as capacity.
 3. Candidates below the floor, out of quota, or with a context window too small
    for the live context plus `contextReserveTokens` are dropped. Among the rest
-   the lowest quota pressure wins. Ties prefer the cheaper tier, and the current
-   model is kept when its headroom is comparable, so a session does not churn
-   models and lose provider cache reuse.
+   the lowest quota **pressure** wins. Ties prefer the cheaper tier, and the
+   current model is kept when its headroom is comparable, so a session does not
+   churn models and lose provider cache reuse.
 
-Anything that fails, times out, or returns confidence below
-`confidenceThreshold` falls back to `strong`. A routing failure never blocks the
-turn. When no candidate is eligible the session model is left untouched.
+Pressure is `timeShare / remaining`: the fraction of the window still to run
+divided by the fraction of quota left, taken from the worst applicable window.
+`1.0` is exactly on pace, above that is burning faster than the clock, below is
+comfortable. It exists because 10% left an hour before reset is fine and 10%
+left six days before reset is not. When a provider reports no reset time or
+window duration, `timeShare` is 1 and pressure degenerates to inverse headroom.
+
+A classification that fails or times out falls back to `strong`. One below
+`confidenceThreshold` keeps the tier Jev picked but is marked
+`jev-low-confidence`: an uncertain answer is still better evidence than
+ignoring the answer, and discarding it would silently force every low-confidence
+turn onto the most expensive model. A routing failure never blocks the turn, and
+when no candidate is eligible the session model is left untouched.
 
 ## Install
 
 ```
-omp -e ~/code/omp-jev-router/src/index.ts
+git clone https://github.com/danieljohnmorris/omp-jev-router.git
+omp install ./omp-jev-router
 ```
 
-Or add the directory to `extensions` in OMP settings. Requires OMP 18.2 or
-later for `ctx.models` and `ctx.setModel`.
+`omp install` links the directory into `~/.omp/plugins`, so it loads in every
+session with no flag. Edits to the source are picked up on the next session
+start; extensions load once per process and there is no hot reload. To try it
+without installing, pass `omp -e ./omp-jev-router/src/index.ts`.
+
+Requires OMP 18.2 or later, for `ctx.models` and `ExtensionAPI.setModel`.
 
 The Jev API key is read from `JEV_API_KEY`, `TYPESAFE_API_KEY`, or the macOS
 Keychain:
@@ -82,9 +97,10 @@ The key is never written to the repo or to the config file.
   "tasks": "auto",
   "candidates": [
     { "model": "anthropic/claude-haiku-4-5", "tier": "quick" },
+    { "model": "deepseek/deepseek-flash", "tier": "quick" },
     { "model": "anthropic/claude-sonnet-5", "tier": "balanced" },
-    { "model": "anthropic/claude-opus-4-5", "tier": "strong", "thinking": "high" },
-    { "model": "zai/glm-5", "tier": "balanced" }
+    { "model": "zai/glm-5.3", "tier": "balanced" },
+    { "model": "anthropic/claude-opus-5", "tier": "strong", "thinking": "high" }
   ],
   "taskAgents": { "quick": "sonic", "balanced": "task", "strong": "task" }
 }
@@ -98,9 +114,9 @@ The key is never written to the repo or to the config file.
 | `cataloguePerTier` | `3` | Providers kept per tier when candidates are derived. |
 | `taskAgents` | `{}` | Tier to agent name for delegated work. |
 | `timeoutMs` | `4000` | Jev classification deadline, capped at 10s. |
-| `quotaTimeoutMs` | `4000` | Usage-report fetch deadline. |
+| `quotaTimeoutMs` | `8000` | Usage-report fetch deadline. A cold probe spans every account of every provider. |
 | `quotaMaxAgeMs` | `600000` | Age past which a cached report counts as stale. |
-| `confidenceThreshold` | `0.6` | Below this, the classification is discarded. |
+| `confidenceThreshold` | `0.6` | Below this, the tier still applies but is marked low-confidence. |
 | `maxPromptChars` | `4000` | Prompt truncation before classification. |
 | `contextReserveTokens` | `32000` | Output headroom a candidate must still have. |
 
@@ -144,13 +160,18 @@ chain you trust.
 | `/jev on` / `/jev off` | Both switches at once. |
 | `/jev main auto` / `/jev main off` | Session routing on or off. |
 | `/jev tasks auto` / `/jev tasks off` | Delegated routing on or off. |
-| `/jev reload` | Re-read the config file. |
+| `/jev reload` | Re-read the config file and the API key. Extension code is not reloaded. |
 
 Every switch change is written back to `~/.omp/jev-router.json`, so it holds
 across restarts. Other keys in the file are left alone.
 
 Status and notifications are interactive-only. In print mode the extension
-routes silently.
+routes silently. The status line reads
+`jev · <tier> via <source> (<confidence>) · <model> · <headroom> left · pressure <n>`,
+where `source` is `jev`, `jev-low-confidence`, `image`, or `fallback`. On any
+state other than available the quota half is replaced by the reason, for example
+`Window 7 days is exhausted`. Main and task routing share one status key, so the
+later of the two is what you see.
 
 ## Development
 
