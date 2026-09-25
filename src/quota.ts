@@ -10,7 +10,13 @@ export interface QuotaHost {
 	modelRegistry: {
 		getProviderBaseUrl(provider: string): string | undefined;
 		authStorage: {
-		fetchUsageReports(options?: {
+			/**
+			 * Optional on purpose: OMP's own callers guard it too (`command-controller`
+			 * checks `!provider.fetchUsageReports`, `selector-controller` calls it with
+			 * `?.()`), and the object an extension receives via `ctx.modelRegistry`
+			 * really does omit it on some builds.
+			 */
+			fetchUsageReports?(options?: {
 				baseUrlResolver?: (provider: string) => string | undefined;
 				signal?: AbortSignal;
 			}): Promise<UsageReport[] | null | undefined>;
@@ -41,6 +47,12 @@ export async function getQuotaSnapshot(host: QuotaHost, config: RouterConfig, no
 		const timer = setTimeout(() => controller.abort(), Math.max(1, config.quotaTimeoutMs));
 		try {
 			const fetchReports = host.modelRegistry.authStorage.fetchUsageReports;
+			if (!fetchReports) {
+				// Observed on omp 18.3.1: `ctx.modelRegistry.authStorage` reaches the
+				// extension without this method, so calling it throws a TypeError that
+				// would otherwise be reported as a network failure.
+				return { reports: cached?.reports ?? [], checkedAt: now, error: "This session's auth storage exposes no usage reporting" };
+			}
 			const reports = await fetchReports.call(host.modelRegistry.authStorage, {
 				baseUrlResolver: (provider: string) => host.modelRegistry.getProviderBaseUrl(provider),
 				signal: controller.signal,
