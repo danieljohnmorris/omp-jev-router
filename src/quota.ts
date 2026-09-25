@@ -27,6 +27,23 @@ export interface QuotaHost {
 			getCredentialOrigin?(provider: string): { kind: string } | undefined;
 			/** Stored credential lookup; `type: "oauth" | "api_key"`. Fallback when origin is absent. */
 			get?(provider: string): { type: string } | undefined;
+			/** 18.3.1 facade: credential store facet. `hasOAuth` marks a plan login. */
+			credentials?: {
+				hasOAuth?(provider: string): boolean;
+				get?(provider: string): { type?: string } | undefined;
+			};
+			/**
+			 * 18.3.1 facade: usage facet. `reports(options)` is the replacement for
+			 * `fetchUsageReports` and takes the same option bag. The facet also has a
+			 * `fetch` property, but that is the injected HTTP fetch implementation,
+			 * not a usage call — calling it with an option bag throws.
+			 */
+			usage?: {
+				reports?(options?: {
+					baseUrlResolver?: (provider: string) => string | undefined;
+					signal?: AbortSignal;
+				}): Promise<UsageReport[] | null | undefined>;
+			};
 		};
 	};
 }
@@ -41,10 +58,20 @@ export interface QuotaHost {
  */
 export function billingForProvider(host: QuotaHost, provider: string): Billing {
 	const auth = host.modelRegistry.authStorage;
-	const origin = auth.getCredentialOrigin?.(provider);
-	if (origin) return origin.kind === "oauth" ? "plan" : "credit";
-	const stored = auth.get?.(provider);
-	if (stored) return stored.type === "oauth" ? "plan" : "credit";
+	try {
+		const origin = auth.getCredentialOrigin?.(provider);
+		if (origin) return origin.kind === "oauth" ? "plan" : "credit";
+		const stored = auth.get?.(provider);
+		if (stored) return stored.type === "oauth" ? "plan" : "credit";
+		// 18.3.1 facade: flat methods are gone; the credential store moved to a
+		// `credentials` facet. `hasOAuth` is the read-only plan marker.
+		const store = auth.credentials;
+		if (store?.hasOAuth?.(provider)) return "plan";
+		const facetCred = store?.get?.(provider);
+		if (facetCred && typeof facetCred.type === "string") return facetCred.type === "oauth" ? "plan" : "credit";
+	} catch {
+		// A throwing probe is no evidence either way.
+	}
 	return "unknown";
 }
 
@@ -70,23 +97,32 @@ export async function getQuotaSnapshot(host: QuotaHost, config: RouterConfig, no
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), Math.max(1, config.quotaTimeoutMs));
 		try {
-			const fetchReports = host.modelRegistry.authStorage.fetchUsageReports;
-			if (!fetchReports) {
+			const auth = host.modelRegistry.authStorage;
+			let reports: unknown;
+			if (auth.fetchUsageReports) {
+				reports = await auth.fetchUsageReports({
+					baseUrlResolver: (provider: string) => host.modelRegistry.getProviderBaseUrl(provider),
+					signal: controller.signal,
+				});
+			} else if (auth.usage?.reports) {
+				// 18.3.1 facade: usage reporting moved to a `usage` facet, where
+				// `reports` takes the same options as the old flat method.
+				reports = await auth.usage.reports({
+					baseUrlResolver: (provider: string) => host.modelRegistry.getProviderBaseUrl(provider),
+					signal: controller.signal,
+				});
+			} else {
 				// Observed on omp 18.3.1: `ctx.modelRegistry.authStorage` reaches the
-				// extension without this method, so calling it throws a TypeError that
-				// would otherwise be reported as a network failure.
+				// extension without any usage surface at all.
 				return { reports: cached?.reports ?? [], checkedAt: now, error: "usage reports unavailable" };
 			}
-			const reports = await fetchReports.call(host.modelRegistry.authStorage, {
-				baseUrlResolver: (provider: string) => host.modelRegistry.getProviderBaseUrl(provider),
-				signal: controller.signal,
-			});
+			if (!Array.isArray(reports)) reports = undefined;
 			if (reports === null || reports === undefined) {
 				// A null result means the fetch produced no answer at all. Recording it as
 				// an empty success would cache "no evidence" as if it were fresh evidence.
 				return { reports: cached?.reports ?? [], checkedAt: now, error: "Usage reports were unavailable" };
 			}
-			const snapshot: QuotaSnapshot = { reports, checkedAt: Date.now() };
+			const snapshot: QuotaSnapshot = { reports: reports as UsageReport[], checkedAt: Date.now() };
 			cached = snapshot;
 			return snapshot;
 		} catch (error) {

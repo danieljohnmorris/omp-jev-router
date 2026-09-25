@@ -39,8 +39,9 @@ could not predict.
    answer is a capability **floor**: the router may pick a higher tier when
    quota says so, never a lower one. Prompts carrying images skip the call and
    take `strong`.
-2. Usage reports come from OMP's own `AuthStorage.fetchUsageReports`, cached for
-   `quotaMaxAgeMs`. Every window of every account of the candidate's provider is
+2. Usage reports come from OMP's own auth storage — `fetchUsageReports` on builds
+   that expose it, otherwise the 18.3.x `usage.reports(options)` facet — cached
+   for `quotaMaxAgeMs`. Every window of every account of the candidate's provider is
    evaluated:
    - **Windows are AND.** An exhausted weekly window blocks the model even when
      the 5-hour window is untouched.
@@ -96,6 +97,11 @@ thing keeping them routable — and it routes to them blind.
   to them blind cannot overspend. With nothing measurable and only credit-billed
   (API-key) candidates left, the router stands down and leaves the session model
   alone, rather than spending a balance it cannot see.
+
+A candidate counts as a plan subscription when this session's credential for its
+provider is OAuth: `AuthStorage.getCredentialOrigin` where present, otherwise the
+18.3.x `credentials.hasOAuth(provider)` / `credentials.get(provider).type` facet.
+Anything else, including an unreadable credential, is treated as credit-billed.
 
 `/jev credits <provider> dry` marks one by hand; `/jev credits <provider> topped`
 clears it immediately after you refill. `/jev` lists the currently dry providers.

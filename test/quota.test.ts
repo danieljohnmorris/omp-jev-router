@@ -113,16 +113,38 @@ describe("getQuotaSnapshot", () => {
 	});
 
 	it("returns a graceful error when fetchUsageReports is missing", async () => {
-		// omp 18.3.1 bug: authStorage exists but fetchUsageReports is undefined
-	const hostMissing: QuotaHost = {
-		modelRegistry: {
-			getProviderBaseUrl: () => undefined,
-			authStorage: {},
-		},
-	};
+		// omp 18.3.1 bug: authStorage exists but no usage surface at all
+		const hostMissing: QuotaHost = {
+			modelRegistry: {
+				getProviderBaseUrl: () => undefined,
+				authStorage: {},
+			},
+		};
 		const snapshot = await getQuotaSnapshot(hostMissing, DEFAULT_CONFIG);
 		expect(snapshot.error).toContain("usage reports unavailable");
 		expect(snapshot.reports).toEqual([]);
+	});
+
+	it("reads reports from the 18.3.1 usage facet when fetchUsageReports is stripped", async () => {
+		const good = [report([limit("5h", 0.2)])];
+		let passedSignal: AbortSignal | undefined;
+		const facetHost: QuotaHost = {
+			modelRegistry: {
+				getProviderBaseUrl: () => undefined,
+				authStorage: {
+					usage: {
+						reports: async (options) => {
+							passedSignal = options?.signal;
+							return good;
+						},
+					},
+				},
+			},
+		};
+		const snapshot = await getQuotaSnapshot(facetHost, DEFAULT_CONFIG);
+		expect(snapshot.error).toBeUndefined();
+		expect(snapshot.reports).toEqual(good);
+		expect(passedSignal).toBeInstanceOf(AbortSignal);
 	});
 });
 
@@ -163,5 +185,33 @@ describe("billingForProvider", () => {
 		});
 		expect(billingForProvider(fallback("oauth"), "anthropic")).toBe("plan");
 		expect(billingForProvider(fallback("api_key"), "anthropic")).toBe("credit");
+	});
+
+	it("reads the 18.3.1 credentials facet when the flat methods are stripped", () => {
+		const facet = (hasOAuth: boolean, type?: string): QuotaHost => ({
+			modelRegistry: {
+				getProviderBaseUrl: () => undefined,
+				authStorage: { credentials: { hasOAuth: () => hasOAuth, get: () => (type === undefined ? undefined : { type }) } },
+			},
+		});
+		expect(billingForProvider(facet(true), "anthropic")).toBe("plan");
+		expect(billingForProvider(facet(false, "api_key"), "anthropic")).toBe("credit");
+		expect(billingForProvider(facet(false), "anthropic")).toBe("unknown");
+	});
+
+	it("treats a throwing credential probe as unknown", () => {
+		const throwing: QuotaHost = {
+			modelRegistry: {
+				getProviderBaseUrl: () => undefined,
+				authStorage: {
+					credentials: {
+						hasOAuth: () => {
+							throw new Error("proxy denied");
+						},
+					},
+				},
+			},
+		};
+		expect(billingForProvider(throwing, "anthropic")).toBe("unknown");
 	});
 });
