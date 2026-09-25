@@ -8,6 +8,9 @@ A cheap question does not need your most expensive model. A model whose weekly
 window is exhausted is not a candidate at all, however capable it is. This
 extension applies both facts before the turn starts.
 
+<img width="942" height="115" alt="Screenshot 2026-09-25 at 14 05 32" src="https://github.com/user-attachments/assets/1ec1a1f8-80ff-41bc-a68e-3fd516b280da" />
+
+
 ```
 $ /jev
 main: auto
