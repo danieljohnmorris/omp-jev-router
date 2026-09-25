@@ -25,6 +25,8 @@ export interface QuotaHost {
 			 * subscription. Optional for the same reason as `fetchUsageReports`.
 			 */
 			getCredentialOrigin?(provider: string): { kind: string } | undefined;
+			/** Stored credential lookup; `type: "oauth" | "api_key"`. Fallback when origin is absent. */
+			get?(provider: string): { type: string } | undefined;
 		};
 	};
 }
@@ -32,13 +34,18 @@ export interface QuotaHost {
 /**
  * Classify how a provider bills this session: an OAuth credential is a plan
  * subscription (capped upstream), any other resolvable auth is a key that
- * draws down a credit balance. No origin at all is `unknown`, which the
- * router treats like `credit` under `credits: "off"`.
+ * draws down a credit balance. Prefers `getCredentialOrigin`; falls back to
+ * the stored credential's `type` because some omp builds (18.3.1) hand
+ * extensions an authStorage missing the origin method. Nothing resolvable is
+ * `unknown`, which the router treats like `credit` under `credits: "off"`.
  */
 export function billingForProvider(host: QuotaHost, provider: string): Billing {
-	const origin = host.modelRegistry.authStorage.getCredentialOrigin?.(provider);
-	if (!origin) return "unknown";
-	return origin.kind === "oauth" ? "plan" : "credit";
+	const auth = host.modelRegistry.authStorage;
+	const origin = auth.getCredentialOrigin?.(provider);
+	if (origin) return origin.kind === "oauth" ? "plan" : "credit";
+	const stored = auth.get?.(provider);
+	if (stored) return stored.type === "oauth" ? "plan" : "credit";
+	return "unknown";
 }
 
 let cached: QuotaSnapshot | undefined;

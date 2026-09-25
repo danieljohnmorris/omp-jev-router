@@ -156,4 +156,12 @@ describe("billingForProvider", () => {
 		const bare: QuotaHost = { modelRegistry: { getProviderBaseUrl: () => undefined, authStorage: {} } };
 		expect(billingForProvider(bare, "anthropic")).toBe("unknown");
 	});
+
+	it("falls back to the stored credential type when getCredentialOrigin is missing", () => {
+		const fallback = (type: string): QuotaHost => ({
+			modelRegistry: { getProviderBaseUrl: () => undefined, authStorage: { get: () => ({ type }) } },
+		});
+		expect(billingForProvider(fallback("oauth"), "anthropic")).toBe("plan");
+		expect(billingForProvider(fallback("api_key"), "anthropic")).toBe("credit");
+	});
 });

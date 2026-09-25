@@ -72,6 +72,14 @@ async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promi
 	if (unresolved > 0) notes.push(`${unresolved} configured model(s) not resolvable`);
 	if (tooSmall > 0) notes.push(`${tooSmall} dropped: context window < ${needed} tokens`);
 	if (dry > 0) notes.push(`${dry} dropped: provider marked out of credits`);
+	if (out.length > 0 && out.every((candidate) => candidate.billing === "unknown")) {
+		// Every provider unclassifiable means the authStorage proxy is stripping the
+		// lookup methods; name what it actually exposes so the gap is diagnosable
+		// from the status line instead of guessed at.
+		const auth: object = host.modelRegistry.authStorage ?? {};
+		const keys = [...Object.keys(auth), ...Object.getOwnPropertyNames(Object.getPrototypeOf(auth) ?? {})].filter((key) => key !== "constructor");
+		notes.push(`billing unreadable; authStorage exposes: ${keys.length > 0 ? [...new Set(keys)].sort().join(", ") : "nothing"}`);
+	}
 	return { candidates: out, note: notes.length > 0 ? notes.join("; ") : undefined };
 }
 
