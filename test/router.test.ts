@@ -27,6 +27,14 @@ describe("chooseCandidate", () => {
 		expect(decision.candidate?.model.id).toBe("big");
 	});
 
+	it("uses the argmax tier as the floor when confidence is merely low, not forced strong", () => {
+		const decision = chooseCandidate(triage("quick", "jev-low-confidence"), [
+			candidate("cheap", "quick", 0.9),
+			candidate("big", "strong", 0.9),
+		]);
+		expect(decision.candidate?.model.id).toBe("cheap");
+	});
+
 	it("excludes exhausted and unknown-quota models", () => {
 		const decision = chooseCandidate(triage("quick"), [
 			candidate("spent", "quick", 0, "exhausted"),

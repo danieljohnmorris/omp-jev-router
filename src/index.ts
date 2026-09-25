@@ -50,7 +50,7 @@ async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promi
 }
 
 function describe(triage: Triage, detail: string): string {
-	return `jev: ${triage.tier} (${triage.source}, ${triage.confidence.toFixed(2)}) · ${detail}`;
+	return `jev · ${triage.tier} via ${triage.source} (${triage.confidence.toFixed(2)}) · ${detail}`;
 }
 
 async function routeMain(state: RouterState, pi: ExtensionAPI, ctx: ExtensionContext, prompt: string, hasImages: boolean): Promise<void> {

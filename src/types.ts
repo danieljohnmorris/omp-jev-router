@@ -62,7 +62,7 @@ export interface Candidate {
 export interface Triage {
 	tier: Tier;
 	confidence: number;
-	source: "jev" | "fallback" | "image";
+	source: "jev" | "jev-low-confidence" | "fallback" | "image";
 	reason: string;
 }
 

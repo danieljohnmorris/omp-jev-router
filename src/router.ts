@@ -77,7 +77,14 @@ function validateAnswer(body: unknown, threshold: number): Triage {
 	) {
 		return fallback("Jev returned an invalid probability distribution");
 	}
-	if (answer.confidence < threshold) return fallback("Jev confidence was below the routing threshold");
+	if (answer.confidence < threshold) {
+		return {
+			tier: answer.choice,
+			confidence: answer.confidence,
+			source: "jev-low-confidence",
+			reason: "Jev's best guess was below the routing threshold",
+		};
+	}
 	return { tier: answer.choice, confidence: answer.confidence, source: "jev", reason: "Jev classified the capability floor" };
 }
 
@@ -149,7 +156,7 @@ function pressure(candidate: Candidate): number {
 
 /** Callers must supply authenticated candidates that fit current context plus their output reserve. */
 export function chooseCandidate(triage: Triage, candidates: Candidate[], currentKey?: string): Decision {
-	const floor = triage.source === "jev" ? TIERS.indexOf(triage.tier) : TIERS.indexOf("strong");
+	const floor = triage.source === "jev" || triage.source === "jev-low-confidence" ? TIERS.indexOf(triage.tier) : TIERS.indexOf("strong");
 	if (floor < 0) return { reason: "No selection: the capability floor is invalid" };
 	const eligible = candidates.filter((candidate) =>
 		TIERS.indexOf(candidate.tier) >= floor &&
