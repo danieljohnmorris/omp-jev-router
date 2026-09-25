@@ -35,7 +35,7 @@ describe("chooseCandidate", () => {
 		expect(decision.candidate?.model.id).toBe("cheap");
 	});
 
-	it("excludes exhausted and unknown-quota models", () => {
+	it("prefers a model with measured headroom over exhausted and unknown-quota models", () => {
 		const decision = chooseCandidate(triage("quick"), [
 			candidate("spent", "quick", 0, "exhausted"),
 			candidate("murky", "quick", undefined, "unknown"),
@@ -44,8 +44,27 @@ describe("chooseCandidate", () => {
 		expect(decision.candidate?.model.id).toBe("ok");
 	});
 
-	it("makes no selection when nothing is eligible", () => {
-		const decision = chooseCandidate(triage("strong"), [candidate("spent", "strong", 0, "exhausted")]);
+	it("selects the cheapest model at the floor when no candidate has readable quota", () => {
+		const decision = chooseCandidate(triage("quick"), [
+			candidate("strongish", "strong", undefined, "unknown"),
+			candidate("cheap", "quick", undefined, "unknown"),
+		]);
+		expect(decision.candidate?.model.id).toBe("cheap");
+	});
+
+	it("stands down instead of spending an unmeasurable balance when credits routing is off", () => {
+		const blind = [candidate("strongish", "strong", undefined, "unknown"), candidate("cheap", "quick", undefined, "unknown")];
+		expect(chooseCandidate(triage("quick"), blind, undefined, "off").candidate).toBeUndefined();
+		expect(chooseCandidate(triage("quick"), blind, undefined, "on").candidate?.model.id).toBe("cheap");
+	});
+
+	it("still uses measured plan headroom when credits routing is off", () => {
+		const decision = chooseCandidate(triage("quick"), [candidate("ok", "quick", 0.5), candidate("blind", "quick", undefined, "unknown")], undefined, "off");
+		expect(decision.candidate?.model.id).toBe("ok");
+	});
+
+	it("never selects an exhausted model, even when no other candidate has readable quota", () => {
+		const decision = chooseCandidate(triage("quick"), [candidate("spent", "quick", 0, "exhausted")]);
 		expect(decision.candidate).toBeUndefined();
 	});
 

@@ -10,7 +10,7 @@ export interface QuotaHost {
 	modelRegistry: {
 		getProviderBaseUrl(provider: string): string | undefined;
 		authStorage: {
-			fetchUsageReports?(options?: {
+		fetchUsageReports(options?: {
 				baseUrlResolver?: (provider: string) => string | undefined;
 				signal?: AbortSignal;
 			}): Promise<UsageReport[] | null | undefined>;
@@ -41,19 +41,26 @@ export async function getQuotaSnapshot(host: QuotaHost, config: RouterConfig, no
 		const timer = setTimeout(() => controller.abort(), Math.max(1, config.quotaTimeoutMs));
 		try {
 			const fetchReports = host.modelRegistry.authStorage.fetchUsageReports;
-			if (!fetchReports) {
-				return { reports: cached?.reports ?? [], checkedAt: now, error: "This OMP build exposes no usage reporting" };
-			}
 			const reports = await fetchReports.call(host.modelRegistry.authStorage, {
 				baseUrlResolver: (provider: string) => host.modelRegistry.getProviderBaseUrl(provider),
 				signal: controller.signal,
 			});
-			const snapshot: QuotaSnapshot = { reports: reports ?? [], checkedAt: Date.now() };
+			if (reports === null || reports === undefined) {
+				// A null result means the fetch produced no answer at all. Recording it as
+				// an empty success would cache "no evidence" as if it were fresh evidence.
+				return { reports: cached?.reports ?? [], checkedAt: now, error: "Usage reports were unavailable" };
+			}
+			const snapshot: QuotaSnapshot = { reports, checkedAt: Date.now() };
 			cached = snapshot;
 			return snapshot;
-		} catch {
-			// Never surface provider error text: it can carry account identifiers.
-			return { reports: cached?.reports ?? [], checkedAt: now, error: "Usage reports could not be refreshed" };
+		} catch (error) {
+			// Provider error *text* can carry account identifiers, so it never escapes.
+			// The error's class and the timeout distinction are not sensitive and are the
+			// only two facts that tell you whether to raise the timeout or look at the network.
+			const timedOut = controller.signal.aborted;
+			const kind = error instanceof Error && error.name && error.name !== "Error" ? error.name : "unknown error";
+			const detail = timedOut ? `timed out after ${Math.max(1, config.quotaTimeoutMs)}ms` : kind;
+			return { reports: cached?.reports ?? [], checkedAt: now, error: `Usage reports could not be refreshed (${detail})` };
 		} finally {
 			clearTimeout(timer);
 		}

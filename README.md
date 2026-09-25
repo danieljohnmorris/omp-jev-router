@@ -49,11 +49,16 @@ could not predict.
      request.
    - A window whose reset time has passed is treated as reset. A report older
      than `quotaMaxAgeMs` counts as stale, and stale never counts as headroom.
-3. Candidates below the floor, out of quota, or with a context window too small
+3. Candidates below the floor, **exhausted**, or with a context window too small
    for the live context plus `contextReserveTokens` are dropped. Among the rest
    the lowest quota **pressure** wins. Ties prefer the cheaper tier, and the
    current model is kept when its headroom is comparable, so a session does not
    churn models and lose provider cache reuse.
+4. If no surviving candidate has *readable* headroom — an OMP build with no usage
+   reporting at all, or a failed fetch — the router still picks, choosing the
+   cheapest tier that clears the floor and saying so in the status line. Only
+   `exhausted` is ever a hard exclusion; missing evidence must not silently
+   disable routing, and must not promote every turn to the strongest model.
 
 Pressure is `timeShare / remaining`: the fraction of the window still to run
 divided by the fraction of quota left, taken from the worst applicable window.
@@ -68,6 +73,31 @@ A classification that fails or times out falls back to `strong`. One below
 ignoring the answer, and discarding it would silently force every low-confidence
 turn onto the most expensive model. A routing failure never blocks the turn, and
 when no candidate is eligible the session model is left untouched.
+
+## Credit-billed providers
+
+Plan quota is measurable; a prepaid balance is not. DeepSeek, OpenRouter, Z.AI
+pay-as-you-go and friends publish no usage window, so step 4 above is the only
+thing keeping them routable — and it routes to them blind.
+
+`credits` decides what blind means:
+
+- `"on"` (default): unmeasurable providers stay candidates, ranked below any
+  provider with measured headroom. The only evidence a balance ran out is the
+  provider's own refusal, so the router listens for it: an `after_provider_response`
+  with HTTP 402, or 400/403/429 whose body matches the insufficient-balance
+  family, marks that **provider** dry in `~/.omp/jev-router-credits.json`. A dry
+  provider is dropped from the candidate set for `creditRecheckMs` (6h default),
+  then retried once — a top-up you never told the router about heals itself.
+  Ordinary rate limits and transport errors are not credit failures and are
+  ignored.
+- `"off"`: only measured plan headroom counts. With nothing measurable the
+  router stands down and leaves the session model alone, rather than spending a
+  balance it cannot see.
+
+`/jev credits <provider> dry` marks one by hand; `/jev credits <provider> topped`
+clears it immediately after you refill. `/jev` lists the currently dry providers.
+The mark is provider-wide, because a balance is provider-wide.
 
 ## Install
 
@@ -122,6 +152,8 @@ makes no calls.
 | `timeoutMs` | `4000` | Jev classification deadline, capped at 10s. |
 | `quotaTimeoutMs` | `8000` | Usage-report fetch deadline. A cold probe spans every account of every provider. |
 | `quotaMaxAgeMs` | `600000` | Age past which a cached report counts as stale. |
+| `credits` | `"on"` | `"on"` keeps unmeasurable credit-billed providers routable and learns from 402s; `"off"` uses only measured plan headroom. |
+| `creditRecheckMs` | `21600000` | How long a provider stays marked out of credits before being retried. |
 | `confidenceThreshold` | `0.6` | Below this, the tier still applies but is marked low-confidence. |
 | `maxPromptChars` | `4000` | Prompt truncation before classification. |
 | `contextReserveTokens` | `32000` | Output headroom a candidate must still have. |
@@ -166,7 +198,9 @@ you trust.
 | `/jev on` / `/jev off` | Both switches at once. |
 | `/jev main auto` / `/jev main off` | Session routing on or off. |
 | `/jev tasks auto` / `/jev tasks off` | Delegated routing on or off. |
-| `/jev reload` | Re-read the config file and the API key. Extension code is not reloaded. |
+| `/jev credits <provider> dry` | Mark a provider out of credits now. |
+| `/jev credits <provider> topped` | Clear the mark after refilling. |
+| `/jev reload` | Re-read the config file, the API key, and the credit marks. Extension code is not reloaded. |
 
 Every switch change is written back to `~/.omp/jev-router.json`, so it holds
 across restarts. Other keys in the file are left alone.

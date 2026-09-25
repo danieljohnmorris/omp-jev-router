@@ -1,4 +1,4 @@
-import type { Candidate, Decision, RouterConfig, Tier, Triage } from "./types";
+import type { Candidate, CreditsMode, Decision, RouterConfig, Tier, Triage } from "./types";
 
 const TIERS: readonly Tier[] = ["quick", "balanced", "strong"];
 const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
@@ -154,20 +154,56 @@ function pressure(candidate: Candidate): number {
 		: 1 / (candidate.quota.remainingFraction as number);
 }
 
-/** Callers must supply authenticated candidates that fit current context plus their output reserve. */
-export function chooseCandidate(triage: Triage, candidates: Candidate[], currentKey?: string): Decision {
+/**
+ * Callers must supply authenticated candidates that fit current context plus their output reserve.
+ *
+ * Capability is a precondition; quota evidence is only a preference. `exhausted` is always a hard
+ * exclusion, but a build that exposes no usage reporting leaves every candidate `unknown`, and a
+ * router that refuses to choose is worse than one that chooses the cheapest model at the floor.
+ */
+export function chooseCandidate(triage: Triage, candidates: Candidate[], currentKey?: string, credits: CreditsMode = "on"): Decision {
 	const floor = triage.source === "jev" || triage.source === "jev-low-confidence" ? TIERS.indexOf(triage.tier) : TIERS.indexOf("strong");
 	if (floor < 0) return { reason: "No selection: the capability floor is invalid" };
-	const eligible = candidates.filter((candidate) =>
-		TIERS.indexOf(candidate.tier) >= floor &&
-		candidate.quota.status === "available" &&
-		fraction(candidate.quota.remainingFraction) && candidate.quota.remainingFraction > 0 &&
-		typeof candidate.model.contextWindow === "number" &&
-		Number.isFinite(candidate.model.contextWindow) && candidate.model.contextWindow > 0 &&
-		candidate.model.input.includes("text") &&
-		(triage.source !== "image" || candidate.model.input.includes("image")),
+	const rejected = new Map<string, number>();
+	const reject = (why: string): false => {
+		rejected.set(why, (rejected.get(why) ?? 0) + 1);
+		return false;
+	};
+	const usable = candidates.filter((candidate) => {
+		if (TIERS.indexOf(candidate.tier) < floor) return reject(`below the ${TIERS[floor]} floor`);
+		if (!candidate.model.input.includes("text")) return reject("no text input");
+		if (triage.source === "image" && !candidate.model.input.includes("image")) return reject("no image input");
+		if (!(typeof candidate.model.contextWindow === "number" && Number.isFinite(candidate.model.contextWindow) && candidate.model.contextWindow > 0))
+			return reject("no usable context window");
+		if (candidate.quota.status === "exhausted") return reject("quota exhausted");
+		return true;
+	});
+	const eligible = usable.filter(
+		(candidate) =>
+			candidate.quota.status === "available" && fraction(candidate.quota.remainingFraction) && candidate.quota.remainingFraction > 0,
 	);
-	if (eligible.length === 0) return { reason: "No selection: no eligible model meets the capability floor, quota and input requirements" };
+	if (eligible.length === 0) {
+		if (usable.length === 0) {
+			const detail = candidates.length === 0
+				? "no candidates were offered (none authenticated, or all too small for the live context)"
+				: [...rejected].map(([why, count]) => `${count} ${why}`).join(", ");
+			return { reason: `No selection at the ${TIERS[floor]} floor: ${detail}` };
+		}
+		if (credits === "off") {
+			return {
+				reason: `No selection at the ${TIERS[floor]} floor: credits routing is off and no candidate has measured plan headroom (${usable.length} unmeasured)`,
+			};
+		}
+		// No measurable headroom anywhere. Prefer the cheapest tier that still clears the floor,
+		// so an unmeasurable provider cannot silently promote every turn to the strongest model.
+		let cheapest = usable[0]!;
+		for (const candidate of usable) {
+			if (TIERS.indexOf(candidate.tier) < TIERS.indexOf(cheapest.tier)) cheapest = candidate;
+		}
+		const current = usable.find((candidate) => `${candidate.model.provider}/${candidate.model.id}` === currentKey);
+		const pick = current && TIERS.indexOf(current.tier) === TIERS.indexOf(cheapest.tier) ? current : cheapest;
+		return { candidate: pick, reason: `Selected without quota evidence (${pick.quota.reason}): no candidate had readable headroom` };
+	}
 	let best = eligible[0]!;
 	for (const candidate of eligible) {
 		if (pressure(candidate) < pressure(best) ||

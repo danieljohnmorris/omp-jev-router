@@ -3,6 +3,8 @@ import { catalogueCandidates } from "./catalogue";
 import { loadConfig, saveModes } from "./config";
 import { loadApiKey } from "./credentials";
 import { getQuotaSnapshot, type QuotaHost, quotaForModel } from "./quota";
+import { type CreditMarks, dryProviders, isDry, isOutOfCredit, loadCredits, markDry, markTopped } from "./credits";
+import { applyFloorHysteresis, updateFloorHysteresis, type FloorHysteresis } from "./hysteresis";
 import { chooseCandidate, classify } from "./router";
 import type { Candidate, CandidateSpec, RouterConfig, RoutingMode, Tier, Triage } from "./types";
 
@@ -13,8 +15,12 @@ interface RouterState {
 	main: RoutingMode;
 	tasks: RoutingMode;
 	apiKey?: string;
+	credits: CreditMarks;
 	lastMain?: string;
 	lastTasks?: string;
+	/** Tier floor for hysteresis: when user approves a task with simple continuation words,
+	 * keep the tier for follow-ups until expired or a new complex prompt resets it. */
+	floorHysteresis?: FloorHysteresis;
 }
 
 /** Configured candidates win; otherwise derive them from the authenticated catalogue. */
@@ -30,15 +36,28 @@ function specsFor(state: RouterState, ctx: ExtensionContext): CandidateSpec[] {
  * With no configured candidates the specs are derived from the models this
  * install is logged in to, so routing works before the user writes any config.
  */
-async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promise<Candidate[]> {
+async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promise<{ candidates: Candidate[]; note?: string }> {
 	const snapshot = await getQuotaSnapshot(ctx as unknown as QuotaHost, state.config);
 	const used = ctx.getContextUsage()?.tokens ?? 0;
 	const needed = used + state.config.contextReserveTokens;
 	const out: Candidate[] = [];
+	let unresolved = 0;
+	let tooSmall = 0;
+	let dry = 0;
 	for (const entry of specsFor(state, ctx)) {
 		const model = ctx.models.resolve(entry.model);
-		if (!model) continue;
-		if (typeof model.contextWindow === "number" && model.contextWindow < needed) continue;
+		if (!model) {
+			unresolved++;
+			continue;
+		}
+		if (typeof model.contextWindow === "number" && model.contextWindow < needed) {
+			tooSmall++;
+			continue;
+		}
+		if (state.config.credits === "on" && isDry(state.credits, model.provider, state.config.creditRecheckMs)) {
+			dry++;
+			continue;
+		}
 		out.push({
 			model,
 			tier: entry.tier,
@@ -46,7 +65,12 @@ async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promi
 			quota: quotaForModel(snapshot, model, state.config),
 		});
 	}
-	return out;
+	const notes: string[] = [];
+	if (snapshot.error) notes.push(`quota stale: ${snapshot.error}`);
+	if (unresolved > 0) notes.push(`${unresolved} configured model(s) not resolvable`);
+	if (tooSmall > 0) notes.push(`${tooSmall} dropped: context window < ${needed} tokens`);
+	if (dry > 0) notes.push(`${dry} dropped: provider marked out of credits`);
+	return { candidates: out, note: notes.length > 0 ? notes.join("; ") : undefined };
 }
 
 function describe(triage: Triage, detail: string): string {
@@ -67,12 +91,14 @@ function quotaDetail(quota: Candidate["quota"]): string {
 }
 
 async function routeMain(state: RouterState, pi: ExtensionAPI, ctx: ExtensionContext, prompt: string, hasImages: boolean): Promise<void> {
-	const triage = await classify(prompt, hasImages, state.config, state.apiKey);
-	const candidates = await buildCandidates(state, ctx);
+	const now = Date.now();
+	let triage = await classify(prompt, hasImages, state.config, state.apiKey);
+	triage = applyFloorHysteresis(triage, state.floorHysteresis, prompt, now);
+	const { candidates, note } = await buildCandidates(state, ctx);
 	const current = ctx.models.current();
-	const decision = chooseCandidate(triage, candidates, current ? `${current.provider}/${current.id}` : undefined);
+	const decision = chooseCandidate(triage, candidates, current ? `${current.provider}/${current.id}` : undefined, state.config.credits);
 	if (!decision.candidate) {
-		state.lastMain = describe(triage, decision.reason);
+		state.lastMain = describe(triage, note ? `${decision.reason} · ${note}` : decision.reason);
 		ctx.ui.setStatus("jev-router", state.lastMain);
 		return;
 	}
@@ -87,6 +113,8 @@ async function routeMain(state: RouterState, pi: ExtensionAPI, ctx: ExtensionCon
 		}
 	}
 	if (chosen.thinking) pi.setThinkingLevel(chosen.thinking as Parameters<ExtensionAPI["setThinkingLevel"]>[0]);
+	// Update hysteresis only if we actually chose a strong/balanced model.
+	state.floorHysteresis = updateFloorHysteresis(chosen.tier, now);
 	state.lastMain = describe(triage, `${key} · ${quotaDetail(chosen.quota)}`);
 	ctx.ui.setStatus("jev-router", state.lastMain);
 }
@@ -133,12 +161,30 @@ function summary(state: RouterState, ctx: ExtensionContext): string {
 		`candidates (${source}): ${byTier}`,
 		`last main: ${state.lastMain ?? "none"}`,
 		`last tasks: ${state.lastTasks ?? "none"}`,
+		`credits: ${state.config.credits}${state.config.credits === "on" ? ` (dry: ${dryProviders(state.credits, state.config.creditRecheckMs).join(", ") || "none"})` : ""}`,
 	].join("\n");
 }
 
 export default function activate(pi: ExtensionAPI): void {
 	const config = loadConfig();
-	const state: RouterState = { config, main: config.main, tasks: config.tasks, apiKey: loadApiKey() };
+	const state: RouterState = { config, main: config.main, tasks: config.tasks, apiKey: loadApiKey(), credits: loadCredits() };
+
+	/**
+	 * Credit-billed providers publish no usage window, so the only machine-readable
+	 * evidence that a balance is gone is the provider's own refusal. 402 (and the
+	 * "insufficient balance" family) marks the provider dry for `creditRecheckMs`;
+	 * ordinary rate limits and transport errors are left alone.
+	 */
+	pi.on("after_provider_response", (event, ctx) => {
+		if (state.config.credits !== "on") return;
+		const body = typeof event.metadata?.error === "string" ? event.metadata.error : undefined;
+		if (!isOutOfCredit(event.status, body)) return;
+		const model = ctx.models.current();
+		if (!model) return;
+		if (isDry(state.credits, model.provider, state.config.creditRecheckMs)) return;
+		state.credits = markDry(state.credits, model.provider, `HTTP ${event.status} from ${model.provider}`);
+		ctx.ui.notify(`jev: ${model.provider} marked out of credits (HTTP ${event.status}); retrying it after ${Math.round(state.config.creditRecheckMs / 60_000)} min`, "warning");
+	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (state.main !== "auto") return;
@@ -162,13 +208,13 @@ export default function activate(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("jev", {
-		description: "Jev router: `on`, `off`, `main auto|off`, `tasks auto|off`, `reload`, or no argument for status",
+		description: "Jev router: `on`, `off`, `main auto|off`, `tasks auto|off`, `credits <provider> dry|topped`, `reload`, or no argument for status",
 		getArgumentCompletions: (prefix) =>
-			["on", "off", "main auto", "main off", "tasks auto", "tasks off", "reload"]
+			["on", "off", "main auto", "main off", "tasks auto", "tasks off", "credits", "reload"]
 				.filter((option) => option.startsWith(prefix))
 				.map((option) => ({ value: option, label: option })),
 		handler: async (args, ctx) => {
-			const [target, value] = args.trim().split(/\s+/);
+			const [target, value, third] = args.trim().split(/\s+/);
 			if (!target) {
 				ctx.ui.notify(summary(state, ctx));
 				return;
@@ -176,9 +222,23 @@ export default function activate(pi: ExtensionAPI): void {
 			if (target === "reload") {
 				state.config = loadConfig();
 				state.apiKey = loadApiKey();
+				state.credits = loadCredits();
 				state.main = state.config.main;
 				state.tasks = state.config.tasks;
+			state.floorHysteresis = undefined;
 				ctx.ui.notify(`Reloaded.\n${summary(state, ctx)}`);
+				return;
+			}
+			if (target === "credits") {
+				if (!value || (third !== "dry" && third !== "topped")) {
+					ctx.ui.notify("Usage: /jev credits <provider> dry|topped", "warning");
+					return;
+				}
+				state.credits =
+					third === "dry"
+						? markDry(state.credits, value, "marked by the user")
+						: markTopped(state.credits, value);
+				ctx.ui.notify(`jev: ${value} marked ${third}.\n${summary(state, ctx)}`);
 				return;
 			}
 			if (target === "on" || target === "off") {
@@ -187,7 +247,7 @@ export default function activate(pi: ExtensionAPI): void {
 			} else if ((target === "main" || target === "tasks") && (value === "auto" || value === "off")) {
 				state[target] = value;
 			} else {
-				ctx.ui.notify("Usage: /jev [on|off] [main|tasks auto|off] [reload]", "warning");
+				ctx.ui.notify("Usage: /jev [on|off] [main|tasks auto|off] [credits <provider> dry|topped] [reload]", "warning");
 				return;
 			}
 			// Persist, so a toggle survives a restart rather than reverting to the file.

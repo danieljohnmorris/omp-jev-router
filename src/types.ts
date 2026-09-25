@@ -2,6 +2,7 @@ import type { Model, UsageReport } from "@oh-my-pi/pi-ai";
 
 export type Tier = "quick" | "balanced" | "strong";
 export type RoutingMode = "auto" | "off";
+export type CreditsMode = "on" | "off";
 
 /** A model the router may select, and the tier it satisfies. */
 export interface CandidateSpec {
@@ -25,6 +26,15 @@ export interface RouterConfig {
 	timeoutMs: number;
 	quotaTimeoutMs: number;
 	quotaMaxAgeMs: number;
+	/**
+	 * `on`: providers with no readable quota (credit-billed ones, or any provider
+	 * on a build with no usage API) stay selectable, ranked below measured ones.
+	 * `off`: only measured plan headroom counts, and the router stands down when
+	 * nothing is measurable rather than spending a balance it cannot see.
+	 */
+	credits: CreditsMode;
+	/** How long a "no credits left" mark holds before the provider is retried. */
+	creditRecheckMs: number;
 	confidenceThreshold: number;
 	maxPromptChars: number;
 	contextReserveTokens: number;

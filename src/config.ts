@@ -18,6 +18,8 @@ export const DEFAULT_CONFIG: RouterConfig = {
 	timeoutMs: 4_000,
 	quotaTimeoutMs: 8_000,
 	quotaMaxAgeMs: 10 * 60_000,
+	credits: "on",
+	creditRecheckMs: 6 * 60 * 60_000,
 	confidenceThreshold: 0.6,
 	maxPromptChars: 4_000,
 	contextReserveTokens: 32_000,
@@ -80,6 +82,8 @@ export function parseConfig(raw: unknown): RouterConfig {
 			typeof threshold === "number" && Number.isFinite(threshold) && threshold >= 0 && threshold <= 1
 				? threshold
 				: DEFAULT_CONFIG.confidenceThreshold,
+		credits: raw.credits === "off" ? "off" : "on",
+		creditRecheckMs: positive(raw.creditRecheckMs, DEFAULT_CONFIG.creditRecheckMs),
 		maxPromptChars: positive(raw.maxPromptChars, DEFAULT_CONFIG.maxPromptChars),
 		contextReserveTokens: positive(raw.contextReserveTokens, DEFAULT_CONFIG.contextReserveTokens),
 	};
