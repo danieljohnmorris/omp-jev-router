@@ -1,6 +1,6 @@
 import type { Candidate, CreditsMode, Decision, RouterConfig, Tier, Triage } from "./types";
 
-const TIERS: readonly Tier[] = ["quick", "balanced", "strong"];
+export const TIERS: readonly Tier[] = ["quick", "balanced", "strong"];
 const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const MAX_RESPONSE_BYTES = 16_384;
 

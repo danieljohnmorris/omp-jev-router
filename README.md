@@ -15,6 +15,7 @@ extension applies both facts before the turn starts.
 $ /jev
 main: auto
 tasks: auto
+sparks: off
 credential: loaded
 candidates (catalogue): quick=3 balanced=3 strong=3
 last main: jev · quick via jev (0.99) · anthropic/claude-haiku-4-5 · 100% left · pressure 0.99
@@ -63,6 +64,10 @@ could not predict.
    cheapest tier that clears the floor and saying so in the status line. Only
    `exhausted` is ever a hard exclusion; missing evidence must not silently
    disable routing, and must not promote every turn to the strongest model.
+5. With `sparks` on, models served by your own hardware join the list and are
+   **preferred**: while a local candidate is live, cloud candidates at or below
+   the highest local tier are released, so the Jev floor alone decides when a
+   turn leaves for the frontier. See [Local hardware](#local-hardware-sparks).
 
 Pressure is `timeShare / remaining`: the fraction of the window still to run
 divided by the fraction of quota left, taken from the worst applicable window.
@@ -142,6 +147,7 @@ makes no calls.
 {
   "main": "auto",
   "tasks": "auto",
+  "sparks": "off",
   "candidates": [
     { "model": "anthropic/claude-haiku-4-5", "tier": "quick" },
     { "model": "deepseek/deepseek-flash", "tier": "quick" },
@@ -164,6 +170,11 @@ makes no calls.
 | `quotaTimeoutMs` | `8000` | Usage-report fetch deadline. A cold probe spans every account of every provider. |
 | `quotaMaxAgeMs` | `600000` | Age past which a cached report counts as stale. |
 | `credits` | `"on"` | `"on"` keeps unmeasurable credit-billed providers routable and learns from 402s; `"off"` uses measured plan headroom and unmeasured OAuth plan subscriptions only. |
+| `sparks` | `off` | `on` puts the local cluster's models in the candidate list and prefers them while they are serving. `off` leaves cloud candidates alone. |
+| `sparksProvider` | `sparks` | Provider name the local models are reached through. |
+| `sparksTiers` | the DGX Spark map | Model id to tier for hardware you own. An id absent from this map is not a candidate at all. |
+| `sparksLivenessMs` | `5000` | How long a liveness probe result is trusted. |
+| `sparksTimeoutMs` | `2000` | One endpoint probe deadline. |
 | `creditRecheckMs` | `21600000` | How long a provider stays marked out of credits before being retried. |
 | `confidenceThreshold` | `0.6` | Below this, the tier still applies but is marked low-confidence. |
 | `maxPromptChars` | `4000` | Prompt truncation before classification. |
@@ -190,6 +201,34 @@ via `ctx.models.list()`, the same set `--model` offers. From that list it:
 Price is a rough capability proxy. Name `candidates` yourself when you care
 which models run. `/jev` reports which source is in use.
 
+## Local hardware (`sparks`)
+
+Hardware you already own is the cheapest capacity in the list and the one whose
+speed you cannot infer from price, so it gets its own switch and its own tier
+map. `/jev sparks on` makes local models candidates; with it `off` nothing local
+is eligible, even if a `sparks/…` entry sits in `candidates`.
+
+- **Tiers come from `sparksTiers`, not from price.** A local model's cost is 0,
+  which the price bands would read as `quick` for every one of them. The default
+  map rates the workhorse models `balanced` and the small ones `quick`, and
+  deliberately puts nothing at `strong`: an architecture-sized Jev floor then
+  always leaves for the frontier, whatever the cluster happens to be serving.
+- **Liveness is probed per endpoint *and* model id.** One head answers
+  `/v1/models` with every id its recipes can serve, not only the one currently
+  loaded, so an endpoint check alone would route to a model that 404s. The probe
+  is `GET /v1/models` per baseUrl, cached for `sparksLivenessMs`, and the id must
+  appear in the response. A refused connection is dead; a body this code cannot
+  parse is **not** evidence the id is absent, so it does not blackhole the
+  candidate.
+- **Local quota is a constant.** It bills nothing and has no balance to spend, so
+  its quota reads as full headroom and zero pressure and its billing is `local` —
+  never `plan`, which under `credits: "off"` is the fallback the selector uses
+  when nothing measurable is left.
+
+Cost is the reason to route here, not speed: a local single-stream decode is
+tens of tok/s against a frontier API's hundreds, so a turn that goes local is
+one where the answer was worth waiting for rather than buying.
+
 ## Task routing
 
 A `task` item that already names an agent is left alone, so nategpt workers,
@@ -206,9 +245,10 @@ you trust.
 | command | effect |
 |---|---|
 | `/jev` | Show state, credential, candidate source, last decisions. |
-| `/jev on` / `/jev off` | Both switches at once. |
+| `/jev on` / `/jev off` | Both routing switches at once. `sparks` is left as it is. |
 | `/jev main auto` / `/jev main off` | Session routing on or off. |
 | `/jev tasks auto` / `/jev tasks off` | Delegated routing on or off. |
+| `/jev sparks on` / `/jev sparks off` | Local hardware in or out of the candidate list. |
 | `/jev credits <provider> dry` | Mark a provider out of credits now. |
 | `/jev credits <provider> topped` | Clear the mark after refilling. |
 | `/jev reload` | Re-read the config file, the API key, and the credit marks. Extension code is not reloaded. |

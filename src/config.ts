@@ -1,7 +1,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { RouterConfig, RoutingMode, Tier } from "./types";
+import type { RouterConfig, RoutingMode, SparksMode, Tier } from "./types";
+import { DEFAULT_SPARKS_PROVIDER, DEFAULT_SPARKS_TIERS } from "./local";
 
 export const CONFIG_PATH = join(homedir(), ".omp", "jev-router.json");
 
@@ -20,6 +21,11 @@ export const DEFAULT_CONFIG: RouterConfig = {
 	quotaMaxAgeMs: 10 * 60_000,
 	credits: "on",
 	creditRecheckMs: 6 * 60 * 60_000,
+	sparks: "off",
+	sparksProvider: DEFAULT_SPARKS_PROVIDER,
+	sparksTiers: { ...DEFAULT_SPARKS_TIERS },
+	sparksLivenessMs: 5_000,
+	sparksTimeoutMs: 2_000,
 	confidenceThreshold: 0.6,
 	maxPromptChars: 4_000,
 	contextReserveTokens: 32_000,
@@ -65,6 +71,28 @@ function taskAgents(value: unknown): RouterConfig["taskAgents"] {
 	return out;
 }
 
+function sparksMode(value: unknown): SparksMode {
+	return value === "on" ? "on" : "off";
+}
+
+/**
+ * A user's tier map merged over the defaults, so adding local hardware needs one
+ * line rather than a copy of the whole list. `"off"` removes an id, which is the
+ * only way to drop something the defaults declare.
+ */
+function sparksTiers(value: unknown): Record<string, Tier> {
+	const out: Record<string, Tier> = { ...DEFAULT_SPARKS_TIERS };
+	if (!record(value)) return out;
+	for (const [id, entry] of Object.entries(value)) {
+		if (entry === "off") {
+			delete out[id];
+			continue;
+		}
+		if (tier(entry)) out[id] = entry;
+	}
+	return out;
+}
+
 /** Parse a user config object. Unknown or malformed fields fall back to defaults rather than throwing. */
 export function parseConfig(raw: unknown): RouterConfig {
 	if (!record(raw)) return { ...DEFAULT_CONFIG };
@@ -84,6 +112,14 @@ export function parseConfig(raw: unknown): RouterConfig {
 				: DEFAULT_CONFIG.confidenceThreshold,
 		credits: raw.credits === "off" ? "off" : "on",
 		creditRecheckMs: positive(raw.creditRecheckMs, DEFAULT_CONFIG.creditRecheckMs),
+		sparks: sparksMode(raw.sparks),
+		sparksProvider:
+			typeof raw.sparksProvider === "string" && raw.sparksProvider.trim()
+				? raw.sparksProvider.trim()
+				: DEFAULT_CONFIG.sparksProvider,
+		sparksTiers: sparksTiers(raw.sparksTiers),
+		sparksLivenessMs: positive(raw.sparksLivenessMs, DEFAULT_CONFIG.sparksLivenessMs),
+		sparksTimeoutMs: positive(raw.sparksTimeoutMs, DEFAULT_CONFIG.sparksTimeoutMs),
 		maxPromptChars: positive(raw.maxPromptChars, DEFAULT_CONFIG.maxPromptChars),
 		contextReserveTokens: positive(raw.contextReserveTokens, DEFAULT_CONFIG.contextReserveTokens),
 	};
@@ -99,10 +135,10 @@ export function loadConfig(path = CONFIG_PATH): RouterConfig {
 }
 
 /**
- * Persist the two switches so a toggle survives a restart. Every other key in
+ * Persist the three switches so a toggle survives a restart. Every other key in
  * the file is preserved, including ones this version does not know about.
  */
-export function saveModes(main: RoutingMode, tasks: RoutingMode, path = CONFIG_PATH): void {
+export function saveModes(main: RoutingMode, tasks: RoutingMode, sparks: SparksMode, path = CONFIG_PATH): void {
 	let raw: Record<string, unknown> = {};
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -111,5 +147,5 @@ export function saveModes(main: RoutingMode, tasks: RoutingMode, path = CONFIG_P
 		// No readable file: write one holding just the switches.
 	}
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify({ ...raw, main, tasks }, null, "\t")}\n`);
+	writeFileSync(path, `${JSON.stringify({ ...raw, main, tasks, sparks }, null, "\t")}\n`);
 }

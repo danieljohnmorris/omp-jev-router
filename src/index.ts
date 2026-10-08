@@ -6,7 +6,8 @@ import { billingForProvider, getQuotaSnapshot, type QuotaHost, quotaForModel } f
 import { type CreditMarks, dryProviders, isDry, isOutOfCredit, loadCredits, markDry, markTopped } from "./credits";
 import { applyFloorHysteresis, updateFloorHysteresis, type FloorHysteresis } from "./hysteresis";
 import { chooseCandidate, classify } from "./router";
-import type { Candidate, CandidateSpec, RouterConfig, RoutingMode, Tier, Triage } from "./types";
+import { endpointLive, isLocalProvider, localQuota, localSpecs, preferLocal } from "./local";
+import type { Candidate, CandidateSpec, RouterConfig, RoutingMode, SparksMode, Tier, Triage } from "./types";
 
 const THINKING_LEVELS: Record<string, true> = { off: true, minimal: true, low: true, medium: true, high: true, xhigh: true, max: true };
 
@@ -14,6 +15,8 @@ interface RouterState {
 	config: RouterConfig;
 	main: RoutingMode;
 	tasks: RoutingMode;
+	/** Local hardware in the candidate list, and preferred while it is serving. */
+	sparks: SparksMode;
 	apiKey?: string;
 	credits: CreditMarks;
 	lastMain?: string;
@@ -23,10 +26,19 @@ interface RouterState {
 	floorHysteresis?: FloorHysteresis;
 }
 
-/** Configured candidates win; otherwise derive them from the authenticated catalogue. */
+/**
+ * Configured candidates win; otherwise derive them from the authenticated
+ * catalogue. Local models are appended whichever way the hosted list was built:
+ * a user who wrote explicit cloud candidates is exactly the user who wants the
+ * owned hardware in front of them once the switch is on.
+ */
 function specsFor(state: RouterState, ctx: ExtensionContext): CandidateSpec[] {
-	if (state.config.candidates.length > 0) return state.config.candidates;
-	return catalogueCandidates(ctx.models.list(), state.config.cataloguePerTier);
+	const hosted =
+		state.config.candidates.length > 0
+			? state.config.candidates
+			: catalogueCandidates(ctx.models.list(), state.config.cataloguePerTier);
+	if (state.sparks !== "on") return hosted;
+	return [...hosted, ...localSpecs(ctx.models.list(), state.config.sparksProvider, state.config.sparksTiers)];
 }
 
 /**
@@ -41,10 +53,14 @@ async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promi
 	const snapshot = await getQuotaSnapshot(host, state.config);
 	const used = ctx.getContextUsage()?.tokens ?? 0;
 	const needed = used + state.config.contextReserveTokens;
-	const out: Candidate[] = [];
+	let out: Candidate[] = [];
 	let unresolved = 0;
 	let tooSmall = 0;
 	let dry = 0;
+	let unreachable = 0;
+	// One probe per endpoint *and* model id: the cluster serves several ids from
+	// one baseUrl, and the head lists ids the running recipe does not answer.
+	const liveness = new Map<string, boolean>();
 	for (const entry of specsFor(state, ctx)) {
 		const model = ctx.models.resolve(entry.model);
 		if (!model) {
@@ -55,6 +71,24 @@ async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promi
 			tooSmall++;
 			continue;
 		}
+		const local = isLocalProvider(model.provider, state.config.sparksProvider);
+		// The switch is the only way local hardware enters the candidate list, and
+		// it has to hold however the list was built: an explicit `candidates` entry
+		// for `sparks/…`, or a catalogue derivation that priced a cost-0 model into
+		// the quick tier. Checked after resolution, where the provider is known.
+		if (local && state.sparks !== "on") continue;
+		if (local) {
+			const key = `${model.baseUrl}\u0000${model.id}`;
+			let live = liveness.get(key);
+			if (live === undefined) {
+				live = await endpointLive(model.baseUrl, model.id, state.config.sparksLivenessMs, state.config.sparksTimeoutMs);
+				liveness.set(key, live);
+			}
+			if (!live) {
+				unreachable++;
+				continue;
+			}
+		}
 		if (state.config.credits === "on" && isDry(state.credits, model.provider, state.config.creditRecheckMs)) {
 			dry++;
 			continue;
@@ -63,8 +97,8 @@ async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promi
 			model,
 			tier: entry.tier,
 			thinking: entry.thinking && THINKING_LEVELS[entry.thinking] ? entry.thinking : undefined,
-			quota: quotaForModel(snapshot, model, state.config),
-			billing: billingForProvider(host, model.provider),
+			quota: local ? localQuota() : quotaForModel(snapshot, model, state.config),
+			billing: local ? "local" : billingForProvider(host, model.provider),
 		});
 	}
 	const notes: string[] = [];
@@ -72,6 +106,12 @@ async function buildCandidates(state: RouterState, ctx: ExtensionContext): Promi
 	if (unresolved > 0) notes.push(`${unresolved} configured model(s) not resolvable`);
 	if (tooSmall > 0) notes.push(`${tooSmall} dropped: context window < ${needed} tokens`);
 	if (dry > 0) notes.push(`${dry} dropped: provider marked out of credits`);
+	if (unreachable > 0) notes.push(`${unreachable} local model(s) dropped: endpoint not serving`);
+	if (state.sparks === "on") {
+		const local = preferLocal(out, state.config.sparksProvider);
+		out = local.candidates;
+		if (local.released > 0) notes.push(`${local.released} cloud candidate(s) released to local hardware`);
+	}
 	return { candidates: out, note: notes.length > 0 ? notes.join("; ") : undefined };
 }
 
@@ -159,6 +199,7 @@ function summary(state: RouterState, ctx: ExtensionContext): string {
 	return [
 		`main: ${state.main}`,
 		`tasks: ${state.tasks}`,
+		`sparks: ${state.sparks}${state.sparks === "on" ? ` (local: ${localSpecs(ctx.models.list(), state.config.sparksProvider, state.config.sparksTiers).length} model(s) declared, provider ${state.config.sparksProvider})` : ""}`,
 		`credential: ${state.apiKey ? "loaded" : "missing"}`,
 		`candidates (${source}): ${byTier}`,
 		`last main: ${state.lastMain ?? "none"}`,
@@ -169,7 +210,7 @@ function summary(state: RouterState, ctx: ExtensionContext): string {
 
 export default function activate(pi: ExtensionAPI): void {
 	const config = loadConfig();
-	const state: RouterState = { config, main: config.main, tasks: config.tasks, apiKey: loadApiKey(), credits: loadCredits() };
+	const state: RouterState = { config, main: config.main, tasks: config.tasks, sparks: config.sparks, apiKey: loadApiKey(), credits: loadCredits() };
 
 	/**
 	 * Credit-billed providers publish no usage window, so the only machine-readable
@@ -210,9 +251,9 @@ export default function activate(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("jev", {
-		description: "Jev router: `on`, `off`, `main auto|off`, `tasks auto|off`, `credits <provider> dry|topped`, `reload`, or no argument for status",
+		description: "Jev router: `on`, `off`, `main auto|off`, `tasks auto|off`, `sparks on|off`, `credits <provider> dry|topped`, `reload`, or no argument for status",
 		getArgumentCompletions: (prefix) =>
-			["on", "off", "main auto", "main off", "tasks auto", "tasks off", "credits", "reload"]
+			["on", "off", "main auto", "main off", "tasks auto", "tasks off", "sparks on", "sparks off", "credits", "reload"]
 				.filter((option) => option.startsWith(prefix))
 				.map((option) => ({ value: option, label: option })),
 		handler: async (args, ctx) => {
@@ -227,6 +268,7 @@ export default function activate(pi: ExtensionAPI): void {
 				state.credits = loadCredits();
 				state.main = state.config.main;
 				state.tasks = state.config.tasks;
+				state.sparks = state.config.sparks;
 			state.floorHysteresis = undefined;
 				ctx.ui.notify(`Reloaded.\n${summary(state, ctx)}`);
 				return;
@@ -246,15 +288,17 @@ export default function activate(pi: ExtensionAPI): void {
 			if (target === "on" || target === "off") {
 				state.main = target === "on" ? "auto" : "off";
 				state.tasks = state.main;
+			} else if (target === "sparks" && (value === "on" || value === "off")) {
+				state.sparks = value;
 			} else if ((target === "main" || target === "tasks") && (value === "auto" || value === "off")) {
 				state[target] = value;
 			} else {
-				ctx.ui.notify("Usage: /jev [on|off] [main|tasks auto|off] [credits <provider> dry|topped] [reload]", "warning");
+				ctx.ui.notify("Usage: /jev [on|off] [main|tasks auto|off] [sparks on|off] [credits <provider> dry|topped] [reload]", "warning");
 				return;
 			}
 			// Persist, so a toggle survives a restart rather than reverting to the file.
-			saveModes(state.main, state.tasks);
-			ctx.ui.setStatus("jev-router", `jev: main ${state.main}, tasks ${state.tasks}`);
+			saveModes(state.main, state.tasks, state.sparks);
+			ctx.ui.setStatus("jev-router", `jev: main ${state.main}, tasks ${state.tasks}, sparks ${state.sparks}`);
 			ctx.ui.notify(summary(state, ctx));
 		},
 	});
