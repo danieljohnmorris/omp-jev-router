@@ -1,5 +1,12 @@
 # omp-jev-router
 
+> **Moved.** This plugin now lives in [danieljohnmorris/omp-plugins](https://github.com/danieljohnmorris/omp-plugins/tree/main/plugins/jev-router) (full history preserved). This repository is archived.
+>
+> ```sh
+> omp plugin marketplace add danieljohnmorris/omp-plugins
+> omp plugin install jev-router@omp-plugins
+> ```
+
 An [OMP](https://oh-my-pi.dev) extension that picks the model for each turn, and
 the agent for each delegated task, from two inputs: a Jev classification of the
 prompt, and the provider usage limits OMP already tracks.
